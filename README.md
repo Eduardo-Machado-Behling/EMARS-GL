@@ -28,7 +28,7 @@
 # Tell the display to update
 lw   $t8, ADDR_DISPLAY
 li   $t9, 1
-sw   $t9, 0($t8)
+sb   $t9, 0($t8)
 ```
 
 ## Keyboard++
