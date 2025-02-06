@@ -9,8 +9,9 @@ plugins {
 version="4.7"
 
 repositories {
-    // Use Maven Central for resolving dependencies.
     mavenCentral()
+    maven { url 'https://jitpack.io' }
+    maven { url "https://dl.bintray.com/kotlin/kotlin-dev" }
 }
 
 dependencies {
@@ -18,6 +19,11 @@ dependencies {
 
     // https://mvnrepository.com/artifact/net.sourceforge.argparse4j/argparse4j
     implementation 'net.sourceforge.argparse4j:argparse4j:0.9.0'
+
+    def jogl = '2.3.2'
+
+    implementation "org.jogamp.gluegen:gluegen-rt-main:$jogl"
+    implementation "org.jogamp.jogl:jogl-all-main:$jogl"
 }
 
 javafx {
