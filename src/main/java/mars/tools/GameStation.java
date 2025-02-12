@@ -357,12 +357,6 @@ public class GameStation extends AbstractMarsToolAndApplication {
       });
     }
 
-    private void setBorder(Border lineBorder) {
-      // TODO Auto-generated method stub
-      throw new UnsupportedOperationException(
-          "Unimplemented method 'setBorder'");
-    }
-
     @Override
     public void init(GLAutoDrawable drawable) {
       System.out.println("OpenGL Init called");
