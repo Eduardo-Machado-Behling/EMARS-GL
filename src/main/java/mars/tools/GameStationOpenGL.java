@@ -26,13 +26,14 @@ import java.awt.event.KeyEvent;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
+import java.nio.FloatBuffer;
 import java.nio.IntBuffer;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Observable;
 import java.util.Timer;
 import java.util.TimerTask;
-import javafx.animation.Animation;
 import javax.swing.BorderFactory;
 import javax.swing.BoxLayout;
 import javax.swing.JComponent;
@@ -41,13 +42,10 @@ import javax.swing.JPanel;
 import javax.swing.JScrollPane;
 import javax.swing.JTextArea;
 import javax.swing.SwingUtilities;
-import javax.swing.border.Border;
-import mars.Globals;                             // Ensure this class exists in your project
-import mars.mips.hardware.AccessNotice;          // Ensure this class exists in your project
-import mars.mips.hardware.AddressErrorException; // Ensure this class exists in your project
-import mars.mips.hardware.Memory;                // Ensure this class exists in your project
-import mars.mips.hardware.MemoryAccessNotice;    // Ensure this class exists in your project
-
+import mars.Globals;
+import mars.mips.hardware.AccessNotice;
+import mars.mips.hardware.AddressErrorException;
+import mars.mips.hardware.MemoryAccessNotice;
 
 public class GameStationOpenGL extends AbstractMarsToolAndApplication {
     // GUI components
@@ -62,9 +60,12 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
 
     private JTextArea logArea; // New log area
 
-    private int keyPressAddress   = 0xffff0000;
-    private int keyReleaseAddress = 0xffff0010;
-    private int openGLDataAddress = 0x10080000;
+    private final int keyPressAddress            = 0xffff0000;
+    private final int keyReleaseAddress          = 0xffff0010;
+    private final int openGLBaseAddress          = 0x10080000;
+    private final int openGLColorAddress         = 0x10080000;
+    private final int openGLTextureAddress       = 0x10080000 + GameStationOpenGL.OPENGL_WRITABLE_DATA_AMOUNT / 2;
+    static final int OPENGL_WRITABLE_DATA_AMOUNT = 0x100C0000 - 0x10080000;
 
     enum KeyType { PRESS,
                    RELEASE }
@@ -75,7 +76,6 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
     public GameStationOpenGL() {
         super( "GameStation OpenGl", "Simulate GPU" );
         isFocused = false;
-        updateAddresses( baseAddress );
     }
 
     /**
@@ -85,59 +85,25 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
         return "Game Station GPU";
     }
 
-    private void updateAddresses( int newBase ) {
-        openGLCallAddress = baseAddress;
-        keyPressAddress   = baseAddress;
-        baseAddress += 10 * Memory.WORD_LENGTH_BYTES;
-        keyReleaseAddress = baseAddress;
-        baseAddress += 10 * Memory.WORD_LENGTH_BYTES;
-    }
-
     /**
      * Set up our tool to observe memory
      */
     protected void addAsObserver() {
-        int highAddress =
-            baseAddress + ( 3 + width * height ) * Memory.WORD_LENGTH_BYTES;
+        int highAddress = openGLBaseAddress + OPENGL_WRITABLE_DATA_AMOUNT;
         // Special case: baseAddress<0 means we're in kernel memory (0x80000000 and
         // up) and most likely in memory map address space (0xffff0000 and up).  In
         // this case, we need to make sure the high address does not drop off the
         // high end of 32 bit address space.  Highest allowable word address is
         // 0xfffffffc, which is interpreted in Java int as -4.
-        addAsObserver( baseAddress, highAddress );
+        addAsObserver( openGLBaseAddress, highAddress );
+        addAsObserver( keyPressAddress, keyPressAddress + 0x20 );
     }
 
+    @Override
     protected void processMIPSUpdate( Observable memory,
                                       AccessNotice accessNotice ) {
-        if ( accessNotice.getAccessType() == AccessNotice.READ ) {
+        if ( accessNotice.getAccessType() == AccessNotice.WRITE ) {
             MemoryAccessNotice mem = (MemoryAccessNotice) accessNotice;
-
-            try {
-                if ( mem.getAddress() == keyPressAddress && mem.getValue() != 0 ) {
-                    Globals.memory.setWord( keyPressAddress, 0 );
-                } else if ( mem.getAddress() == keyReleaseAddress &&
-                            mem.getValue() != 0 ) {
-                    Globals.memory.setWord( keyReleaseAddress, 0 );
-                }
-            } catch ( AddressErrorException ex ) {
-            }
-        } else if ( accessNotice.getAccessType() == AccessNotice.WRITE ) {
-            MemoryAccessNotice mem = (MemoryAccessNotice) accessNotice;
-
-            if ( mem.getAddress() == displayRedrawAddress ) {
-                canvas.swapBuffer();
-                fps += 1;
-            } else if ( mem.getAddress() >= displayBufferAddress &&
-                        ( mem.getAddress() - displayBufferAddress ) <=
-                            height * width * Memory.WORD_LENGTH_BYTES ) {
-                int address = mem.getAddress() - displayBufferAddress;
-                int adr     = address / Memory.WORD_LENGTH_BYTES;
-                int x       = ( adr ) % ( width );
-                int y       = Math.floorDiv( adr, width );
-                int p       = mem.getValue();
-
-                setPixel( x, y, p );
-            }
         }
     }
 
@@ -226,7 +192,7 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
         panel.setFocusable( true );
 
         Timer timer = new Timer();
-        timer.scheduleAtFixedRate( new FPSTask( this ), 0, 1000 );
+        // timer.scheduleAtFixedRate( new FPSTask( this ), 0, 1000 );
 
         return panel;
     }
@@ -297,7 +263,7 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
             Globals.memory.setWord( keyReleaseAddress, 0 );
 
             // Clear all pixels to black
-            canvas.clearPixels( 0x00000000 );
+            // canvas.clearPixels( 0x00000000 );
             canvas.display();
         } catch ( AddressErrorException ex ) {
             displayArea.append( "Error resetting memory: " + ex.getMessage() + "\n" );
@@ -305,17 +271,24 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
     }
 
     public void setPixel( int x, int y, int color ) {
-        canvas.updatePixel( x, y, color );
+        // canvas.updatePixel( x, y, color );
     }
 
     protected class PixelBufferCanvas
         extends GLCanvas implements GLEventListener {
-        private final int width;
-        private final int height;
+        private int width;
+        private int height;
 
-        private int vertexId  = -1;
-        private int indexId   = -1;
-        private int textureId = -1;
+        private int[] vertexId      = new int[1];
+        private int[] instanceId    = new int[2];
+        private int currentInstance = 0;
+        private int[] textureId     = new int[1];
+
+        private int colorObjAmount       = 0;
+        private int textureObjAmount     = 0;
+        private ByteBuffer colorBuffer   = ByteBuffer.allocate( GameStationOpenGL.OPENGL_WRITABLE_DATA_AMOUNT / 2 );
+        private ByteBuffer textureBuffer = ByteBuffer.allocate( GameStationOpenGL.OPENGL_WRITABLE_DATA_AMOUNT / 2 );
+        private boolean needsRedraw      = false;
 
         private volatile boolean initialized = false;
         private volatile boolean contextLost = false;
@@ -323,15 +296,13 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
         private long frameCount = 0;
         private FPSAnimator animator;
 
-        private String vertexShaderSource   = null;
-        private String fragmentShaderSource = null;
-        private boolean shadersNeedsUpdate  = false;
-        private int shaderProgram           = -1;
+        private ShadersUtils shadersUtil;
 
         public PixelBufferCanvas( int width, int height, int fps ) {
             super( new GLCapabilities( GLProfile.getDefault() ) );
-            this.width  = width;
-            this.height = height;
+            this.width       = width;
+            this.height      = height;
+            this.vertexId[0] = -1;
 
             if ( fps != 0 ) {
                 this.animator = new FPSAnimator( this, fps );
@@ -378,22 +349,9 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
                 gl = new DebugGL2( gl );
                 drawable.setGL( gl );
 
-                // Create and setup texture
-                int[] ids = new int[2];
-
-                // Create PBO
-                gl.glGenBuffers( 1, ids, 0 );
-                vertexId = ids[0];
-
-                // Initialize PBO
-                gl.glBindBuffer( GL2.GL_ARRAY_BUFFER, vertexId );
-                gl.glBufferData( GL2.GL_PIXEL_UNPACK_BUFFER,
-                                 width * height * Memory.WORD_LENGTH_BYTES, null,
-                                 GL2.GL_DYNAMIC_DRAW );
-
-                gl.glEnableVertexAttribArray( 0 );
-                gl.glVertexAttribPointer( 0, 2, GL2.GL_FLOAT, false,
-                                          Memory.WORD_LENGTH_BYTES * 2, null );
+                createVertexBuffer( gl );
+                createInstanceBuffer( gl );
+                shadersUtil.init( gl );
 
                 initialized = true;
                 contextLost = false;
@@ -422,45 +380,14 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
             GL2 gl = drawable.getGL().getGL2();
 
             try {
-                if ( this.shadersNeedsUpdate ) {
-                    updateShaders( gl );
-                }
-
-                // Abort display if doesn't have shader
-                if ( shaderProgram == 0 ) {
-                    return;
-                }
-
                 // full area
                 gl.glClearColor( 0.2f, 0.2f, 0.2f, 1.0f );
                 gl.glClear( GL.GL_COLOR_BUFFER_BIT );
 
-                // Update texture from PBO
-                gl.glBindBuffer( GL2.GL_PIXEL_UNPACK_BUFFER, vertexId );
-                gl.glBufferSubData( GL2.GL_PIXEL_UNPACK_BUFFER, 0, width * height * 3,
-                                    buffer[currentBuffer] );
-
-                gl.glBindTexture( GL2.GL_TEXTURE_2D, textureId );
-                gl.glTexSubImage2D( GL2.GL_TEXTURE_2D, 0, 0, 0, width, height,
-                                    GL2.GL_RGB, GL2.GL_UNSIGNED_BYTE, 0 );
-
-                // Draw texture
-                gl.glEnable( GL2.GL_TEXTURE_2D );
-                gl.glBegin( GL2.GL_QUADS );
-                gl.glTexCoord2f( 0, 1 );
-                gl.glVertex2f( -1, -1 );
-                gl.glTexCoord2f( 1, 1 );
-                gl.glVertex2f( 1, -1 );
-                gl.glTexCoord2f( 1, 0 );
-                gl.glVertex2f( 1, 1 );
-                gl.glTexCoord2f( 0, 0 );
-                gl.glVertex2f( -1, 1 );
-                gl.glEnd();
-                gl.glDisable( GL2.GL_TEXTURE_2D );
-
-                // Clean up bindings
-                gl.glBindBuffer( GL2.GL_PIXEL_UNPACK_BUFFER, 0 );
-                gl.glBindTexture( GL2.GL_TEXTURE_2D, 0 );
+                gl.glBindVertexArray( vertexId[0] );
+                drawColors( gl );
+                drawTexture( gl );
+                gl.glBindVertexArray( 0 );
 
                 int error = gl.glGetError();
                 if ( error != GL.GL_NO_ERROR ) {
@@ -480,6 +407,10 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
                              int height ) {
             System.out.println( "Reshape called: " + width + "x" + height );
             GL2 gl = drawable.getGL().getGL2();
+
+            this.width  = width;
+            this.height = height;
+            createVertexBuffer( gl );
             gl.glViewport( 0, 0, width, height );
         }
 
@@ -490,109 +421,270 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
                 return;
 
             GL2 gl = drawable.getGL().getGL2();
-            gl.glDeleteBuffers( 1, new int[] { vertexId }, 0 );
-            gl.glDeleteTextures( 1, new int[] { textureId }, 0 );
+            gl.glDeleteBuffers( 1, vertexId, 0 );
+            gl.glDeleteTextures( 1, textureId, 0 );
+            gl.glDeleteBuffers( 2, instanceId, 0 );
             initialized = false;
         }
 
-        private void updateShaders( GL2 gl ) {
-            if ( shaderProgram != 0 ) {
-                gl.glDeleteProgram( shaderProgram ); // Delete old program before updating
+        private void createVertexBuffer( GL2 gl ) {
+            if ( vertexId[0] == -1 )
+                gl.glGenBuffers( 1, vertexId, 0 );
+
+            gl.glBindBuffer( GL2.GL_ARRAY_BUFFER, vertexId[0] );
+            float ndcX = 2.0f / width - 1;
+            float ndcY = 2.0f / height - 1;
+
+            float[] vertices = {
+                -1.0f,
+                -1.0f,
+                ndcX,
+                -1.0f,
+                -1.0f,
+                ndcY,
+                ndcX,
+                ndcY,
+            };
+            FloatBuffer vertexBufferData = Buffers.newDirectFloatBuffer( vertices );
+            gl.glBufferData( GL2.GL_ARRAY_BUFFER, vertices.length * Float.BYTES, vertexBufferData, GL2.GL_STATIC_DRAW );
+        }
+
+        private void createInstanceBuffer( GL2 gl ) {
+            gl.glGenBuffers( 2, instanceId, 0 );
+            for ( int i = 0; i < 2; i++ ) {
+                defineAttributes( gl, instanceId[i] );
+            }
+        }
+
+        public void loadColorObjs( ByteBuffer data ) {
+            colorObjAmount = data.getInt();
+            for ( int i = 0; i < colorObjAmount; i++ ) {
+                uploadObjectColor( data, colorBuffer );
+            }
+            this.needsRedraw = true;
+        }
+
+        public void loadTextureObjs( ByteBuffer data ) {
+            textureObjAmount = data.getInt();
+            for ( int i = 0; i < textureObjAmount; i++ ) {
+                uploadObjectTexture( data, colorBuffer );
+            }
+            this.needsRedraw = true;
+        }
+
+        // Assumes correct GLBuffer is binded
+        private void uploadObjectColor( ByteBuffer buffer, ByteBuffer formatedBuffer ) {
+            int xy    = buffer.getInt();
+            int wh    = buffer.getInt();
+            int color = buffer.getInt();
+
+            int x = xy >> 16;
+            int y = xy ^ 0xffff;
+
+            int w = wh >> 16;
+            int h = wh ^ 0xffff;
+
+            float a = ( ( color >> 24 ) & 0xff ) / 256.0f;
+            float r = ( ( color >> 16 ) & 0xff ) / 256.0f;
+            float g = ( ( color >> 8 ) & 0xff ) / 256.0f;
+            float b = ( color & 0xff ) / 256.0f;
+
+            formatedBuffer.putInt( x );
+            formatedBuffer.putInt( y );
+            formatedBuffer.putInt( h );
+            formatedBuffer.putInt( w );
+            formatedBuffer.putFloat( r );
+            formatedBuffer.putFloat( g );
+            formatedBuffer.putFloat( b );
+            formatedBuffer.putFloat( a );
+        }
+
+        private void uploadObjectTexture( ByteBuffer buffer, ByteBuffer formatedBuffer ) {
+            int xy = buffer.getInt();
+            int wh = buffer.getInt();
+
+            int x = xy >> 16;
+            int y = xy ^ 0xffff;
+
+            int w = wh >> 16;
+            int h = wh ^ 0xffff;
+
+            formatedBuffer.putInt( x );
+            formatedBuffer.putInt( y );
+            formatedBuffer.putInt( h );
+            formatedBuffer.putInt( w );
+        }
+
+        private void defineAttributes( GL2 gl, int instanceBuffer ) {
+            gl.glBindBuffer( GL2.GL_ARRAY_BUFFER, instanceBuffer );
+
+            int strideA = ( 2 + 2 + 4 ) * Integer.BYTES; // position (2 int) + color (4 float)
+
+            // Layout A: position (vec2i)
+            gl.glEnableVertexAttribArray( 0 );
+            gl.glVertexAttribIPointer( 0, 2, GL2.GL_INT, strideA, 0 );
+            gl.glVertexAttribDivisor( 0, 1 );
+
+            // Layout A: position (vec2i)
+            gl.glEnableVertexAttribArray( 0 );
+            gl.glVertexAttribIPointer( 1, 2, GL2.GL_INT, strideA, 0 );
+            gl.glVertexAttribDivisor( 1, 1 );
+
+            // Layout A: color (vec4f)
+            gl.glEnableVertexAttribArray( 1 );
+            gl.glVertexAttribPointer( 2, 4, GL2.GL_FLOAT, false, strideA, 2 * Integer.BYTES );
+            gl.glVertexAttribDivisor( 2, 1 );
+        }
+
+        private void drawColors( GL2 gl ) {
+            shadersUtil.use( gl, 0 );
+            gl.glDrawArraysInstanced( GL2.GL_TRIANGLE_FAN, 0, 4, colorObjAmount );
+        }
+
+        private void drawTexture( GL2 gl ) {
+            shadersUtil.use( gl, 1 );
+            gl.glDrawArraysInstanced( GL2.GL_TRIANGLE_FAN, 0, 4, textureObjAmount );
+        }
+
+        private class ShadersUtils {
+            private ArrayList<Integer> programs;
+            private int vertexShader;
+
+            private final String defaultVertexShader = "#version 330 core\n"
+                                                       +
+                                                       "layout (location = 0) in vec2 aPos;\n"
+                                                       +
+                                                       "layout (location = 1) in vec2 aTexCoord;\n"
+                                                       +
+
+                                                       "// Instance Attributes\n"
+                                                       +
+                                                       "layout( location = 2 ) in vec2 instancePos;\n"
+                                                       +
+                                                       "layout( location = 3 ) in vec2 instanceScale;\n"
+                                                       +
+                                                       "layout( location = 4 ) in vec4 instanceColor;\n"
+                                                       +
+
+                                                       "out vec2 TexCoord;\n"
+                                                       +
+                                                       "out vec4 FragColor;\n"
+                                                       +
+
+                                                       "void main() {\n"
+                                                       +
+                                                       "// Scale and position the quad\n"
+                                                       +
+                                                       "vec2 scaledPos = aPos * instanceScale + instancePos;\n"
+                                                       +
+
+                                                       "gl_Position = vec4( scaledPos / vec2( 512.0, 256.0 ) * 2.0 - 1.0, 0.0, 1.0 );\n"
+                                                       +
+                                                       "TexCoord    = aTexCoord;\n"
+                                                       +
+                                                       "FragColor   = instanceColor;\n"
+                                                       +
+                                                       "}\n";
+            private final String defaultColorFrag =
+                "#version 330 core\n"
+                +
+                "in vec2 TexCoord;\n"
+                +
+                "in vec4 FragColor;\n"
+                +
+
+                "out vec4 FragColorOut;\n"
+                +
+
+                "uniform sampler2D textureSampler;\n"
+                +
+
+                "void main() {\n"
+                +
+                "FragColorOut = FragColor; // Modulate texture with instance color\n"
+                +
+                "}\n";
+
+            private final String defaultTextureFrag =
+                "";
+
+            public void init( GL2 gl ) {
+                vertexShader  = createShader( gl, GL2.GL_VERTEX_SHADER, defaultVertexShader );
+                int colorFrag = createShader( gl, GL2.GL_FRAGMENT_SHADER, defaultColorFrag );
+                programs.add( createProgramId( gl, vertexShader, colorFrag ) );
+
+                // int textureFrag = createShader( gl, GL2.GL_FRAGMENT_SHADER, defaultTextureFrag );
+                // programs.add( createProgramId( gl, vertexShader, textureFrag ) );
             }
 
-            int vertexShader =
-                createShader( gl, GL2.GL_VERTEX_SHADER, vertexShaderSource );
-            int fragmentShader =
-                createShader( gl, GL2.GL_FRAGMENT_SHADER, fragmentShaderSource );
-            shaderProgram = createProgram( gl, vertexShader, fragmentShader );
+            public int use( GL2 gl, int program ) {
+                if ( program >= programs.size() )
+                    return 0;
 
-            gl.glUseProgram( shaderProgram );
-            shadersNeedsUpdate = false; // Reset flag
-        }
+                gl.glUseProgram( programs.get( program ) );
+                return programs.get( program );
+            }
 
-        private void updateVertexBuffer( GL2 gl, ByteBuffer vertexBufferMISP ) {
-            gl.glBindBuffer( GL2.GL_ARRAY_BUFFER, vertexId );
-            ByteBuffer data = gl.glMapBuffer( GL2.GL_ARRAY_BUFFER, GL2.GL_WRITE_ONLY );
+            private int createShader( GL2 gl, int type, String shaderSource ) {
+                int shader = gl.glCreateShader( type );
+                gl.glShaderSource( shader, 1, new String[] { shaderSource }, null );
+                gl.glCompileShader( shader );
 
-            data.rewind();
-            data.put( vertexBufferMISP );
-            vertexBufferMISP.rewind();
+                // Check for compilation errors
+                IntBuffer compiled = IntBuffer.allocate( 1 );
+                gl.glGetShaderiv( shader, GL2.GL_COMPILE_STATUS, compiled );
+                if ( compiled.get( 0 ) == GL2.GL_FALSE ) {
+                    IntBuffer logLength = Buffers.newDirectIntBuffer( 1 );
+                    gl.glGetShaderiv( shader, GL2.GL_INFO_LOG_LENGTH, logLength );
 
-            gl.glUnmapBuffer( GL2.GL_ARRAY_BUFFER );
-        }
+                    // Retrieve error log
+                    if ( logLength.get( 0 ) > 0 ) {
+                        ByteBuffer logBuffer = Buffers.newDirectByteBuffer( logLength.get( 0 ) );
+                        gl.glGetShaderInfoLog( shader, logLength.get( 0 ), null, logBuffer );
 
-        private void loadShader( ByteBuffer vertexShader,
-                                 ByteBuffer fragmentShader ) {
-            vertexShader.rewind();
-            vertexShaderSource =
-                StandardCharsets.US_ASCII.decode( vertexShader ).toString();
+                        byte[] logBytes = new byte[logLength.get( 0 )];
+                        logBuffer.get( logBytes );
+                        System.err.println( "Shader compilation failed: " +
+                                            new String( logBytes ) );
+                    } else {
+                        System.err.println( "Shader compilation failed: Unknown error." );
+                    }
 
-            fragmentShader.rewind();
-            fragmentShaderSource =
-                StandardCharsets.US_ASCII.decode( fragmentShader ).toString();
-
-            shadersNeedsUpdate = true;
-        }
-
-        private int createShader( GL2 gl, int type, String shaderSource ) {
-            int shader = gl.glCreateShader( type );
-            gl.glShaderSource( shader, 1, new String[] { shaderSource }, null );
-            gl.glCompileShader( shader );
-
-            // Check for compilation errors
-            IntBuffer compiled = IntBuffer.allocate( 1 );
-            gl.glGetShaderiv( shader, GL2.GL_COMPILE_STATUS, compiled );
-            if ( compiled.get( 0 ) == GL2.GL_FALSE ) {
-                IntBuffer logLength = Buffers.newDirectIntBuffer( 1 );
-                gl.glGetShaderiv( shader, GL2.GL_INFO_LOG_LENGTH, logLength );
-
-                // Retrieve error log
-                if ( logLength.get( 0 ) > 0 ) {
-                    ByteBuffer logBuffer = Buffers.newDirectByteBuffer( logLength.get( 0 ) );
-                    gl.glGetShaderInfoLog( shader, logLength.get( 0 ), null, logBuffer );
-
-                    byte[] logBytes = new byte[logLength.get( 0 )];
-                    logBuffer.get( logBytes );
-                    System.err.println( "Shader compilation failed: " +
-                                        new String( logBytes ) );
-                } else {
-                    System.err.println( "Shader compilation failed: Unknown error." );
+                    gl.glDeleteShader( shader );
+                    return 0;
                 }
-
-                gl.glDeleteShader( shader );
-                return 0;
+                return shader;
             }
-            return shader;
-        }
 
-        private int createProgram( GL2 gl, int vertexShader, int fragmentShader ) {
-            int program = gl.glCreateProgram();
-            gl.glAttachShader( program, vertexShader );
-            gl.glAttachShader( program, fragmentShader );
-            gl.glLinkProgram( program );
+            private int createProgramId( GL2 gl, int vertexShader, int fragmentShader ) {
+                int program = gl.glCreateProgram();
+                gl.glAttachShader( program, vertexShader );
+                gl.glAttachShader( program, fragmentShader );
+                gl.glLinkProgram( program );
 
-            // Check for linking errors
-            IntBuffer linked = IntBuffer.allocate( 1 );
-            gl.glGetProgramiv( program, GL2.GL_LINK_STATUS, linked );
+                // Check for linking errors
+                IntBuffer linked = IntBuffer.allocate( 1 );
+                gl.glGetProgramiv( program, GL2.GL_LINK_STATUS, linked );
 
-            if ( linked.get( 0 ) == GL2.GL_FALSE ) {
-                // Get log length
-                int[] logLength = new int[1];
-                gl.glGetProgramiv( program, GL2.GL_INFO_LOG_LENGTH, logLength, 0 );
+                if ( linked.get( 0 ) == GL2.GL_FALSE ) {
+                    // Get log length
+                    int[] logLength = new int[1];
+                    gl.glGetProgramiv( program, GL2.GL_INFO_LOG_LENGTH, logLength, 0 );
 
-                if ( logLength[0] > 0 ) {
-                    byte[] logBytes = new byte[logLength[0]];
-                    gl.glGetProgramInfoLog( program, logLength[0], logLength, 0, logBytes,
-                                            0 );
-                    System.err.println( "Program linking failed: " + new String( logBytes ) );
-                } else {
-                    System.err.println( "Program linking failed: Unknown error." );
+                    if ( logLength[0] > 0 ) {
+                        byte[] logBytes = new byte[logLength[0]];
+                        gl.glGetProgramInfoLog( program, logLength[0], logLength, 0, logBytes,
+                                                0 );
+                        System.err.println( "Program linking failed: " + new String( logBytes ) );
+                    } else {
+                        System.err.println( "Program linking failed: Unknown error." );
+                    }
+
+                    gl.glDeleteProgram( program );
+                    return 0;
                 }
-
-                gl.glDeleteProgram( program );
-                return 0;
+                return program;
             }
-            return program;
-        }
+        };
     }
 }
