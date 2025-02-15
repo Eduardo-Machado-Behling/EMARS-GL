@@ -6,6 +6,26 @@ plugins {
     id "com.github.johnrengelman.shadow" version "7.1.2"
 }
 
+// Specify Java version using source and target compatibility
+java {
+    toolchain {
+        languageVersion.set(JavaLanguageVersion.of(17))
+    }
+}
+
+tasks.register('runWithDebug', JavaExec) {
+    group = "application"
+    description = "Runs the application and waits for VS Code to attach a debugger."
+
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = application.mainClass.get()
+
+    jvmArgs = [
+        "-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=*:5005"
+    ]
+}
+
+
 version="4.7"
 
 repositories {
@@ -27,7 +47,7 @@ dependencies {
 }
 
 javafx {
-    version = "11.0.2"
+    version = "21.0.1"
     modules = ['javafx.controls', 'javafx.graphics']
 }
 
@@ -42,11 +62,11 @@ testing {
 }
 
 compileKotlin {
-    kotlinOptions.jvmTarget = "11"
+    kotlinOptions.jvmTarget = "17"
 }
 
 compileTestKotlin {
-    kotlinOptions.jvmTarget = "11"
+    kotlinOptions.jvmTarget = "17"
 }
 
 application {
