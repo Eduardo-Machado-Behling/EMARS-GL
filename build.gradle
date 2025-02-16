@@ -67,7 +67,24 @@ compileTestKotlin {
     kotlinOptions.jvmTarget = "11"
 }
 
+task copyNatives(type: Copy) {
+    from fileTree(dir: "${projectDir}/natives", includes: ["**/*.dll", "**/*.so", "**/*.jnilib"])
+    into "${buildDir}/libs/natives"
+}
+
+jar {
+    dependsOn copyNatives
+}
+
+shadowJar {
+    archiveBaseName.set('EMARS')
+    archiveClassifier.set('')
+    archiveVersion.set('')
+}
+
 application {
     // Define the main class for the application.
     mainClass = 'Mars'
+
+    applicationDefaultJvmArgs = ["-Djava.library.path=${projectDir}/natives/windows-amd64"]
 }

@@ -16,11 +16,11 @@ import java.awt.Color;
 import java.awt.Dimension;
 import java.awt.FlowLayout;
 import java.awt.Font;
+import java.awt.event.ActionEvent;
 import java.awt.event.ComponentAdapter;
 import java.awt.event.ComponentEvent;
 import java.awt.event.FocusAdapter;
 import java.awt.event.FocusEvent;
-import java.awt.event.KeyAdapter;
 import java.awt.event.KeyEvent;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
@@ -30,16 +30,23 @@ import java.nio.IntBuffer;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Observable;
 import java.util.Queue;
+import java.util.Set;
+import java.util.Timer;
 import java.util.TimerTask;
+import javax.swing.AbstractAction;
+import javax.swing.ActionMap;
 import javax.swing.BorderFactory;
 import javax.swing.BoxLayout;
+import javax.swing.InputMap;
 import javax.swing.JComponent;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
 import javax.swing.JTextArea;
+import javax.swing.KeyStroke;
 import javax.swing.SwingUtilities;
 import mars.Globals;
 import mars.mips.hardware.AccessNotice;
@@ -64,10 +71,15 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
     private final int keyPressAddress = 0xffff0000;
     private int keyPressAmount        = 0;
 
+    private boolean lockKeys                                        = false;
+    private final Queue<javafx.util.Pair<KeyEvent, KeyType>> buffer = new ArrayDeque<>();
+    private final Set<Integer> pressedKeys                          = new HashSet<>(); // Track pressed keys
+
     private final int keyReleaseAddress = 0xffff0010;
     private int keyReleaseAmount        = 0;
 
     static private final int openGLBaseAddress   = 0x10080000;
+    static private final int openGLRedrawAddress = 0x1007fffc;
     static private final int openGLHighAddress   = 0x100C0010;
     static final int OPENGL_WRITABLE_DATA_AMOUNT = openGLHighAddress - openGLBaseAddress;
 
@@ -100,26 +112,64 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
         // this case, we need to make sure the high address does not drop off the
         // high end of 32 bit address space.  Highest allowable word address is
         // 0xfffffffc, which is interpreted in Java int as -4.
-        addAsObserver( openGLBaseAddress, openGLHighAddress );
-        addAsObserver( keyPressAddress, keyPressAddress + 0x20 );
+        addAsObserver( openGLRedrawAddress, openGLRedrawAddress );
+        addAsObserver( keyPressAddress, keyPressAddress );
+        addAsObserver( keyReleaseAddress, keyReleaseAddress );
     }
 
     @Override
     protected void processMIPSUpdate( Observable memory,
                                       AccessNotice accessNotice ) {
+        MemoryAccessNotice mem = (MemoryAccessNotice) accessNotice;
         if ( accessNotice.getAccessType() == AccessNotice.WRITE ) {
-            MemoryAccessNotice mem = (MemoryAccessNotice) accessNotice;
-            if ( mem.getAddress() < openGLHighAddress ) {
-                if ( mem.getAddress() == openGLBaseAddress ) {
-                    canvas.drawCall( mem.getValue() );
-                } else if ( mem.getAddress() > openGLBaseAddress ) {
-                    canvas.sync( mem.getAddress() - openGLBaseAddress - 4, mem.getValue(), mem.getLength() );
-                }
-            } else if ( mem.getAddress() == keyReleaseAddress ) {
-                keyReleaseAmount = 0;
-            } else if ( mem.getAddress() == keyPressAddress ) {
-                keyPressAmount = 0;
+
+            switch ( mem.getAddress() ) {
+                case openGLRedrawAddress:
+                    try {
+                        canvas.drawCall( Memory.getInstance().getWordNoNotify( openGLBaseAddress ) );
+                    } catch ( AddressErrorException e ) {
+                        e.printStackTrace();
+                    }
+                    break;
+
+                case keyReleaseAddress:
+                    keyReleaseAmount = 0;
+                    lockKeys         = false;
+                    clearBuffer();
+                    break;
+
+                case keyPressAddress:
+                    keyPressAmount = 0;
+                    lockKeys       = false;
+                    clearBuffer();
+                    break;
+
+                default:
+                    break;
             }
+        } else {
+            switch ( mem.getAddress() ) {
+                case keyReleaseAddress:
+                    if ( keyReleaseAmount > 0 )
+                        lockKeys = true;
+                    break;
+
+                case keyPressAddress:
+                    fps++;
+                    if ( keyPressAmount > 0 )
+                        lockKeys = true;
+                    break;
+
+                default:
+                    break;
+            }
+        }
+    }
+
+    private void clearBuffer() {
+        while ( !buffer.isEmpty() ) {
+            javafx.util.Pair<KeyEvent, KeyType> ev = buffer.poll();
+            handleKeyEvent( ev.getKey(), ev.getValue() );
         }
     }
 
@@ -160,18 +210,7 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
         thirdRowPanel.add( statusLabel );
 
         // Add key listener to the panel
-        panel.addKeyListener( new KeyAdapter() {
-            @Override
-            public void keyPressed( KeyEvent e ) {
-                handleKeyEvent( e, KeyType.PRESS );
-            }
-
-            @Override
-            public void keyReleased( KeyEvent e ) {
-                handleKeyEvent( e, KeyType.RELEASE );
-            }
-        } );
-
+        setupKeyBindings( panel );
         // Add mouse listener to handle focus
         panel.addMouseListener( new MouseAdapter() {
             @Override
@@ -205,22 +244,76 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
         pack(); // Calculate size
         setLocationRelativeTo( null );
         panel.setFocusable( true );
-        // timer.scheduleAtFixedRate( new FPSTask( this ), 0, 1000 );
+
+        Timer timer = new Timer();
+        timer.scheduleAtFixedRate( new FPSTask( this ), 0, 1000 );
 
         return panel;
     }
 
+    private void setupKeyBindings( JPanel panel ) {
+        InputMap inputMap   = panel.getInputMap( JComponent.WHEN_IN_FOCUSED_WINDOW );
+        ActionMap actionMap = panel.getActionMap();
+
+        int[] keys = {
+            KeyEvent.VK_0, KeyEvent.VK_1, KeyEvent.VK_2, KeyEvent.VK_3, KeyEvent.VK_4, KeyEvent.VK_5,
+            KeyEvent.VK_6, KeyEvent.VK_7, KeyEvent.VK_8, KeyEvent.VK_9,
+            KeyEvent.VK_A, KeyEvent.VK_B, KeyEvent.VK_C, KeyEvent.VK_D, KeyEvent.VK_E, KeyEvent.VK_F,
+            KeyEvent.VK_G, KeyEvent.VK_H, KeyEvent.VK_I, KeyEvent.VK_J, KeyEvent.VK_K, KeyEvent.VK_L,
+            KeyEvent.VK_M, KeyEvent.VK_N, KeyEvent.VK_O, KeyEvent.VK_P, KeyEvent.VK_Q, KeyEvent.VK_R,
+            KeyEvent.VK_S, KeyEvent.VK_T, KeyEvent.VK_U, KeyEvent.VK_V, KeyEvent.VK_W, KeyEvent.VK_X,
+            KeyEvent.VK_Y, KeyEvent.VK_Z,
+            KeyEvent.VK_SPACE, KeyEvent.VK_ENTER, KeyEvent.VK_BACK_SPACE, KeyEvent.VK_TAB,
+            KeyEvent.VK_SHIFT, KeyEvent.VK_CONTROL, KeyEvent.VK_ALT,
+            KeyEvent.VK_UP, KeyEvent.VK_DOWN, KeyEvent.VK_LEFT, KeyEvent.VK_RIGHT,
+            KeyEvent.VK_ESCAPE, KeyEvent.VK_DELETE, KeyEvent.VK_INSERT, KeyEvent.VK_HOME,
+            KeyEvent.VK_END, KeyEvent.VK_PAGE_UP, KeyEvent.VK_PAGE_DOWN,
+            KeyEvent.VK_F1, KeyEvent.VK_F2, KeyEvent.VK_F3, KeyEvent.VK_F4, KeyEvent.VK_F5,
+            KeyEvent.VK_F6, KeyEvent.VK_F7, KeyEvent.VK_F8, KeyEvent.VK_F9, KeyEvent.VK_F10,
+            KeyEvent.VK_F11, KeyEvent.VK_F12
+        };
+
+        // Bind each key for both PRESS and RELEASE events
+        for ( int keyCode : keys ) {
+            bindKey( panel, keyCode, KeyType.PRESS, true );
+            bindKey( panel, keyCode, KeyType.RELEASE, false );
+        }
+    }
+
+    private void bindKey( JPanel panel, int keyCode, KeyType type, boolean pressed ) {
+        String actionName = "key_" + keyCode + "_" + ( pressed ? "pressed" : "released" );
+
+        InputMap inputMap   = panel.getInputMap( JComponent.WHEN_IN_FOCUSED_WINDOW );
+        ActionMap actionMap = panel.getActionMap();
+
+        inputMap.put( KeyStroke.getKeyStroke( keyCode, 0, !pressed ), actionName );
+        actionMap.put( actionName, new AbstractAction() {
+            @Override
+            public void actionPerformed( ActionEvent e ) {
+                KeyEvent keyEvent = new KeyEvent( panel, pressed ? KeyEvent.KEY_PRESSED : KeyEvent.KEY_RELEASED,
+                                                  System.currentTimeMillis(), 0, keyCode, (char) keyCode );
+                if ( isFocused ) {
+                    if ( !lockKeys ) {
+                        handleKeyEvent( keyEvent, type );
+                    } else {
+                        buffer.add( new javafx.util.Pair<>( keyEvent, type ) );
+                    }
+                }
+            }
+        } );
+    }
+
     public class FPSTask extends TimerTask {
 
-        private GameStation parent;
+        private GameStationOpenGL parent;
 
-        FPSTask( GameStation parent ) {
+        FPSTask( GameStationOpenGL parent ) {
             this.parent = parent;
         }
 
         @Override
         public void run() {
-            System.out.println( "fps: " + String.format( "- (%d)", fps ) );
+            System.out.println( "fps: " + String.format( "- (%d)", parent.fps ) );
             fps = 0;
         }
     }
@@ -231,12 +324,19 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
     private void handleKeyEvent( KeyEvent e, KeyType t ) {
         try {
             if ( t == KeyType.PRESS ) {
-                if ( keyPressAmount < 8 ) {
-                    Globals.memory.setByte( keyPressAddress + 2 + keyPressAmount++, e.getKeyCode() );
+                if ( pressedKeys.contains( e.getKeyCode() ) )
+                    return;
+
+                pressedKeys.add( e.getKeyCode() );
+                if ( keyPressAmount < 15 ) {
+                    Globals.memory.setByte( keyPressAddress + ++keyPressAmount, e.getKeyCode() );
+                    Globals.memory.setByte( keyPressAddress, keyPressAmount );
                 }
             } else {
-                if ( keyReleaseAmount < 8 ) {
-                    Globals.memory.setByte( keyReleaseAddress + 2 + keyReleaseAmount++, e.getKeyCode() );
+                pressedKeys.remove( e.getKeyCode() );
+                if ( keyReleaseAmount < 15 ) {
+                    Globals.memory.setByte( keyReleaseAddress + ++keyReleaseAmount, e.getKeyCode() );
+                    Globals.memory.setByte( keyReleaseAddress, keyReleaseAmount );
                 }
             }
 
@@ -264,7 +364,6 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
             statusLabel.setText( "Ready for keyboard input" );
         }
     }
-
     /**
      * Reset clears the display and memory
      */
@@ -277,6 +376,12 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
             // Clear our memory-mapped I/O addresses
             Globals.memory.setWord( keyPressAddress, 0 );
             Globals.memory.setWord( keyReleaseAddress, 0 );
+
+            keyPressAmount   = 0;
+            keyReleaseAmount = 0;
+            lockKeys         = false;
+            pressedKeys.clear();
+            buffer.clear();
 
             // Clear all pixels to black
             canvas.clear();
@@ -296,7 +401,6 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
         private final int[] instanceId     = new int[1];
 
         private ByteBuffer buffer;
-        private final int[] memorySync = new int[GameStationOpenGL.OPENGL_WRITABLE_DATA_AMOUNT / Integer.BYTES];
 
         private int instanceAmount        = 1;
         private boolean bufferNeedsUpdate = false;
@@ -350,25 +454,11 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
         }
 
         public void clear() {
-            for ( int i = 0; i < memorySync.length; i++ ) {
-                memorySync[i] = 0;
-            }
-
             drawCall( 0 );
         }
 
-        public void sync( int i, int value, int length ) {
-            int index = Math.floorDiv( i, 4 );
-            int rest  = i % 4;
-            // Java dumbness
-            // For some reason all shift operation have a hidden modulo 0xffffffff >>> (32 % 32)
-            int mask          = length + rest < 4 ? 0xffffffff >>> ( ( length + rest ) * 8 ) : 0;
-            mask              = ( mask | ~( 0xffffffff >>> ( rest * 8 ) ) );
-            int actualValue   = ( memorySync[index] & mask ) | ( ( value << ( length - rest ) * 8 ) & ~mask );
-            memorySync[index] = actualValue;
-        }
-
         public void drawCall( int value ) {
+
             instanceAmount    = value;
             bufferNeedsUpdate = true;
         }
@@ -405,7 +495,7 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
         public void display( GLAutoDrawable drawable ) {
             frameCount++;
             if ( frameCount % 60 == 0 ) { // Log every 60 frames
-                System.out.println( "Frame " + frameCount + " - Canvas size: " + getWidth() + "x" + getHeight() );
+                // System.out.println( "Frame " + frameCount + " - Canvas size: " + getWidth() + "x" + getHeight() );
             }
 
             if ( !initialized || contextLost ) {
@@ -457,33 +547,29 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
             gl.glBindBuffer( GL3.GL_ARRAY_BUFFER, 0 );
         }
 
-        private void printBuffer() {
-            ByteBuffer duplicateBuffer = buffer.duplicate(); // Create a duplicate
-            duplicateBuffer.flip();                          // Prepare for reading
-
-            System.out.println( "Buffer contents on gl.glBufferSubData" );
-            while ( duplicateBuffer.hasRemaining() ) {
-                System.out.print( "x = " + duplicateBuffer.getFloat() + " | " );
-                System.out.print( "y = " + duplicateBuffer.getFloat() + " | " );
-                System.out.print( "w = " + duplicateBuffer.getFloat() + " | " );
-                System.out.print( "h = " + duplicateBuffer.getFloat() + " | " );
-                System.out.print( "rot = " + duplicateBuffer.getFloat() + " | " );
-                System.out.print( "r =" + duplicateBuffer.getFloat() + " | " );
-                System.out.print( "g = " + duplicateBuffer.getFloat() + " | " );
-                System.out.print( "b =" + duplicateBuffer.getFloat() + " | " );
-                System.out.print( "a = " + duplicateBuffer.getFloat() + " | " );
-                System.out.print( "textId = " + duplicateBuffer.getInt() + " | " );
-                System.out.println(); // New line for clarity
-            }
-        }
-
         private void formatBuffer( ByteBuffer buffer ) {
             buffer.clear();
+            int addr = GameStationOpenGL.openGLBaseAddress + 4;
             for ( int i = 0; i < instanceAmount; i++ ) {
-                int xy     = memorySync[i * 4];
-                int wh     = memorySync[i * 4 + 1];
-                int rotype = memorySync[i * 4 + 2];
-                int color  = memorySync[i * 4 + 3];
+                int xy;
+                int wh;
+                int rotype;
+                int color;
+
+                // System.out.print( "addr = " + Integer.toHexString( addr ) + " | " );
+                try {
+                    xy = Memory.getInstance().getWordNoNotify( addr );
+                    addr += 4;
+                    wh = Memory.getInstance().getWordNoNotify( addr );
+                    addr += 4;
+                    rotype = Memory.getInstance().getWordNoNotify( addr );
+                    addr += 4;
+                    color = Memory.getInstance().getWordNoNotify( addr );
+                    addr += 4;
+                } catch ( AddressErrorException e ) {
+                    e.printStackTrace();
+                    return;
+                }
 
                 int x = xy >> 16;
                 int y = xy & 0xffff;
@@ -505,17 +591,17 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
                 float fh  = h * 2.0f / height;
                 float rot = (float) ( Math.PI * ( rotation / 180.0f ) );
 
-                System.out.print( "x = " + x + " | " );
-                System.out.print( "y = " + y + " | " );
-                System.out.print( "w = " + w + " | " );
-                System.out.print( "h = " + h + " | " );
-                System.out.print( "rot = " + rot + " | " );
-                System.out.print( "r =" + r + " | " );
-                System.out.print( "g = " + g + " | " );
-                System.out.print( "b =" + b + " | " );
-                System.out.print( "a = " + a + " | " );
-                System.out.print( "text = " + color + " | " );
-                System.out.println(); // New line for clarity
+                // System.out.print( "x = " + x + " | " );
+                // System.out.print( "y = " + y + " | " );
+                // System.out.print( "w = " + w + " | " );
+                // System.out.print( "h = " + h + " | " );
+                // System.out.print( "rot = " + rot + " | " );
+                // System.out.print( "r =" + r + " | " );
+                // System.out.print( "g = " + g + " | " );
+                // System.out.print( "b =" + b + " | " );
+                // System.out.print( "a = " + a + " | " );
+                // System.out.print( "text = " + Integer.toHexString( color ) + " | " );
+                // System.out.println(); // New line for clarity
 
                 buffer.putFloat( fx );
                 buffer.putFloat( fy );
@@ -887,6 +973,9 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
             }
 
             public void dispose( GL3 gl ) {
+                if ( glTextureArray == -1 || texturesLoaded == 0 )
+                    return;
+
                 IntBuffer tex = IntBuffer.allocate( 1 );
                 tex.put( glTextureArray );
                 gl.glBindTexture( GL3.GL_TEXTURE_2D_ARRAY, 0 ); // Unbind the texture array
