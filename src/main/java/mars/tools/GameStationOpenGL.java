@@ -280,7 +280,6 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
 
             // Clear all pixels to black
             canvas.clear();
-            canvas.display();
         } catch ( AddressErrorException ex ) {
             displayArea.append( "Error resetting memory: " + ex.getMessage() + "\n" );
         }
@@ -453,7 +452,6 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
             buffer = gl.glMapBuffer( GL3.GL_ARRAY_BUFFER, GL3.GL_MAP_WRITE_BIT | GL3.GL_READ_WRITE );
 
             formatBuffer( buffer );
-            printBuffer();
 
             gl.glUnmapBuffer( GL3.GL_ARRAY_BUFFER );
             gl.glBindBuffer( GL3.GL_ARRAY_BUFFER, 0 );
@@ -507,24 +505,32 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
                 float fh  = h * 2.0f / height;
                 float rot = (float) ( Math.PI * ( rotation / 180.0f ) );
 
+                System.out.print( "x = " + x + " | " );
+                System.out.print( "y = " + y + " | " );
+                System.out.print( "w = " + w + " | " );
+                System.out.print( "h = " + h + " | " );
+                System.out.print( "rot = " + rot + " | " );
+                System.out.print( "r =" + r + " | " );
+                System.out.print( "g = " + g + " | " );
+                System.out.print( "b =" + b + " | " );
+                System.out.print( "a = " + a + " | " );
+                System.out.print( "text = " + color + " | " );
+                System.out.println(); // New line for clarity
+
                 buffer.putFloat( fx );
                 buffer.putFloat( fy );
                 buffer.putFloat( fw );
                 buffer.putFloat( fh );
                 buffer.putFloat( rot );
+                buffer.putFloat( r );
+                buffer.putFloat( g );
+                buffer.putFloat( b );
+                buffer.putFloat( a );
                 if ( type == 0 ) {
-                    buffer.putFloat( r );
-                    buffer.putFloat( g );
-                    buffer.putFloat( b );
-                    buffer.putFloat( a );
-                    buffer.putInt( -1 );
+                    buffer.putFloat( -1 );
                 } else {
                     int textAddr = color;
-                    buffer.putFloat( 0 );
-                    buffer.putFloat( 0 );
-                    buffer.putFloat( 0 );
-                    buffer.putFloat( 0 );
-                    buffer.putInt( textManager.push( textAddr ) );
+                    buffer.putFloat( (float) textManager.push( textAddr ) );
                 }
             }
         }
@@ -548,12 +554,12 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
                 return;
             }
 
+            animator.stop();
             GL3 gl = drawable.getGL().getGL3();
             gl.glDeleteBuffers( 1, vertexArrayId, 0 );
             gl.glDeleteBuffers( 1, vertexBufferId, 0 ); // if you need to delete the vertex buffer
             gl.glDeleteBuffers( 1, instanceId, 0 );
             textManager.dispose( gl );
-            animator.stop();
             initialized = false;
         }
 
@@ -597,7 +603,7 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
             gl.glBindVertexArray( vertexArrayId[0] );
             gl.glBindBuffer( GL3.GL_ARRAY_BUFFER, instanceBuffer );
 
-            int stride = ( 2 + 2 + 2 + 1 + 4 ) * Float.BYTES + Integer.BYTES;
+            int stride = ( 2 + 2 + 1 + 4 + 1 ) * Float.BYTES;
             int offset = 0;
 
             // Position (vec2)
@@ -624,9 +630,9 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
             gl.glVertexAttribDivisor( 4, 1 );
             offset += 4 * Float.BYTES;
 
-            // TextureID (int)
+            // TextureID (float)
             gl.glEnableVertexAttribArray( 5 );
-            gl.glVertexAttribIPointer( 5, 1, GL3.GL_INT, stride, offset );
+            gl.glVertexAttribPointer( 5, 1, GL3.GL_FLOAT, false, stride, offset );
             gl.glVertexAttribDivisor( 5, 1 );
 
             gl.glBindBuffer( GL3.GL_ARRAY_BUFFER, 0 );
@@ -647,7 +653,7 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
                 "layout (location = 2) in vec2 iScale;  // Instance scale\n"+
                 "layout (location = 3) in float iAngle; // Instance rotation\n"+
                 "layout (location = 4) in vec4 iColor;  // Instance Color\n"+
-                "layout (location = 5) in int iTexture;  // Instance Color\n"+
+                "layout (location = 5) in float iTexture;  // Instance Color\n"+
 
                 "out vec3 TexCoords;\n"+
                 "out vec4 ifColor;\n"+
@@ -787,8 +793,10 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
 
             private final HashMap<Integer, Integer> textureRegister;
             private final Queue<Pair> bitmapsToLoad;
-            private int texturesLoaded = 0;
-            private int glTextureArray = -1;
+            private int texturesLoaded      = 0;
+            private int glTextureArray      = -1;
+            private final int textureWidth  = 64;
+            private final int textureHeight = 64;
 
             private TextureManager() {
                 this.texturesLoaded  = 0;
@@ -808,25 +816,41 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
                 gl.glTexParameteri( GL3.GL_TEXTURE_2D_ARRAY, GL3.GL_TEXTURE_MIN_FILTER, GL3.GL_NEAREST );
                 gl.glTexParameteri( GL3.GL_TEXTURE_2D_ARRAY, GL3.GL_TEXTURE_MAG_FILTER, GL3.GL_NEAREST );
 
+                gl.glEnable( GL.GL_BLEND );
+                gl.glBlendFunc( GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA );
+
                 IntBuffer maxArrayLayers = IntBuffer.allocate( 1 );
                 gl.glGetIntegerv( GL3.GL_MAX_ARRAY_TEXTURE_LAYERS, maxArrayLayers );
                 System.out.println( "Max texture array layers: " + maxArrayLayers.get( 0 ) );
                 int depth = Math.min( GameStationOpenGL.OPENGL_WRITABLE_DATA_AMOUNT / 6, maxArrayLayers.get( 0 ) );
-                gl.glTexStorage3D( GL3.GL_TEXTURE_2D_ARRAY, 1, GL3.GL_RGBA8, 64, 64, depth );
+                gl.glTexStorage3D( GL3.GL_TEXTURE_2D_ARRAY, 1, GL3.GL_RGBA8, textureWidth, textureHeight, depth );
 
+                gl.glBindTexture( GL3.GL_TEXTURE_2D_ARRAY, 0 ); // Bind as texture array
                 text.clear();
             }
 
             public void register( int address ) {
 
                 try {
-                    int width  = Memory.getInstance().getHalf( address );
-                    int height = Memory.getInstance().getHalf( address + 2 );
+                    int width       = Memory.getInstance().getHalf( address );
+                    int height      = Memory.getInstance().getHalf( address + 2 );
+                    int reverseAddr = address + width * height * 4 + 4;
 
-                    ByteBuffer bb = ByteBuffer.allocate( width * height + 4 );
-                    for ( int i = 0; i < width * height; i++ ) {
-                        int addr = address + 4 + i * 4;
-                        bb.putInt( Memory.getInstance().getWordNoNotify( addr ) );
+                    ByteBuffer bb = ByteBuffer.allocate( textureWidth * textureHeight * 4 );
+                    for ( int i = 0; i < textureWidth * textureHeight; i++ ) {
+                        int value = 0;
+                        int x     = i % textureWidth;
+                        int y     = Math.floorDiv( i, textureWidth );
+
+                        if ( x < width && y >= textureHeight - height ) {
+                            if ( x == 0 ) {
+                                reverseAddr -= width * 4;
+                            }
+                            value = Memory.getInstance().getWordNoNotify( reverseAddr );
+                            reverseAddr += 4;
+                        }
+
+                        bb.putInt( value );
                     }
 
                     bitmapsToLoad.add( new Pair( address, bb ) );
@@ -844,13 +868,16 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
             }
 
             public void populateTexture( GL3 gl ) {
+                gl.glBindTexture( GL3.GL_TEXTURE_2D_ARRAY, glTextureArray ); // Bind as texture array
                 while ( !bitmapsToLoad.isEmpty() ) {
                     Pair val = bitmapsToLoad.poll();
+                    val.data.flip();
 
-                    gl.glTexSubImage3D( GL3.GL_TEXTURE_2D_ARRAY, 0, 0, 0, texturesLoaded, 64, 64, 1, GL3.GL_RGBA, GL3.GL_UNSIGNED_BYTE, val.data );
+                    gl.glTexSubImage3D( GL3.GL_TEXTURE_2D_ARRAY, 0, 0, 0, texturesLoaded, textureWidth, textureHeight, 1, GL3.GL_RGBA, GL3.GL_UNSIGNED_BYTE, val.data );
                     textureRegister.put( val.addr, texturesLoaded++ );
                     val.data.clear();
                 }
+                gl.glBindTexture( GL3.GL_TEXTURE_2D_ARRAY, 0 ); // Bind as texture array
             }
 
             public int activateTexture( GL3 gl ) {
