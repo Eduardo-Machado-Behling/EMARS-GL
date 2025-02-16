@@ -6,13 +6,6 @@ plugins {
     id "com.github.johnrengelman.shadow" version "7.1.2"
 }
 
-// Specify Java version using source and target compatibility
-java {
-    toolchain {
-        languageVersion.set(JavaLanguageVersion.of(17))
-    }
-}
-
 tasks.register('runWithDebug', JavaExec) {
     group = "application"
     description = "Runs the application and waits for VS Code to attach a debugger."
@@ -30,24 +23,29 @@ version="4.7"
 
 repositories {
     mavenCentral()
-    maven { url 'https://jitpack.io' }
-    maven { url "https://dl.bintray.com/kotlin/kotlin-dev" }
+    maven { url "https://jogamp.org/deployment/maven/" } // Correct repository for 2.5.0+
 }
 
 dependencies {
+    def joglVersion = '2.3.2' // Keep all dependencies at the same version
+
+    implementation "org.jogamp.gluegen:gluegen-rt:${joglVersion}"
+    implementation "org.jogamp.jogl:jogl-all:${joglVersion}"
+
+    implementation "org.jogamp.gluegen:gluegen-rt:${joglVersion}:natives-windows-amd64"
+    implementation "org.jogamp.gluegen:gluegen-rt:${joglVersion}:natives-windows-i586"
+
+    implementation "org.jogamp.jogl:jogl-all:${joglVersion}:natives-windows-amd64"
+    implementation "org.jogamp.jogl:jogl-all:${joglVersion}:natives-windows-i586"
+    implementation "org.jogamp.jogl:jogl-all:${joglVersion}:natives-linux-amd64"
+    implementation "org.jogamp.jogl:jogl-all:${joglVersion}:natives-macosx-universal"
+
     implementation 'com.google.guava:guava:31.1-jre'
-
-    // https://mvnrepository.com/artifact/net.sourceforge.argparse4j/argparse4j
     implementation 'net.sourceforge.argparse4j:argparse4j:0.9.0'
-
-    def jogl = '2.3.2'
-
-    implementation "org.jogamp.gluegen:gluegen-rt-main:$jogl"
-    implementation "org.jogamp.jogl:jogl-all-main:$jogl"
 }
 
 javafx {
-    version = "21.0.1"
+    version = "11"
     modules = ['javafx.controls', 'javafx.graphics']
 }
 
@@ -62,11 +60,11 @@ testing {
 }
 
 compileKotlin {
-    kotlinOptions.jvmTarget = "17"
+    kotlinOptions.jvmTarget = "11"
 }
 
 compileTestKotlin {
-    kotlinOptions.jvmTarget = "17"
+    kotlinOptions.jvmTarget = "11"
 }
 
 application {

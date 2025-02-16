@@ -1,9 +1,9 @@
 package mars.tools;
 
 import com.jogamp.common.nio.Buffers;
-import com.jogamp.opengl.DebugGL2;
+import com.jogamp.opengl.DebugGL3;
 import com.jogamp.opengl.GL;
-import com.jogamp.opengl.GL2;
+import com.jogamp.opengl.GL3;
 import com.jogamp.opengl.GLAutoDrawable;
 import com.jogamp.opengl.GLCapabilities;
 import com.jogamp.opengl.GLEventListener;
@@ -11,7 +11,6 @@ import com.jogamp.opengl.GLException;
 import com.jogamp.opengl.GLProfile;
 import com.jogamp.opengl.awt.GLCanvas;
 import com.jogamp.opengl.util.FPSAnimator;
-import com.jogamp.opengl.util.texture.TextureData;
 import java.awt.BorderLayout;
 import java.awt.Color;
 import java.awt.Dimension;
@@ -28,17 +27,11 @@ import java.awt.event.MouseEvent;
 import java.nio.ByteBuffer;
 import java.nio.FloatBuffer;
 import java.nio.IntBuffer;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.LinkedList;
-import java.util.List;
-import java.util.Map;
 import java.util.Observable;
-import java.util.PriorityQueue;
 import java.util.Queue;
-import java.util.Timer;
 import java.util.TimerTask;
 import javax.swing.BorderFactory;
 import javax.swing.BoxLayout;
@@ -74,12 +67,9 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
     private final int keyReleaseAddress = 0xffff0010;
     private int keyReleaseAmount        = 0;
 
-    private final int openGLBaseAddress          = 0x10080000;
-    private final int openGLColorAddress         = 0x10080000;
-    private final int openGLTextureAddress       = openGLColorAddress + GameStationOpenGL.OPENGL_WRITABLE_DATA_AMOUNT / 2;
-    static final int OPENGL_WRITABLE_DATA_AMOUNT = 0x100C0000 - 0x10080000;
-
-    private final ByteBuffer buffer = ByteBuffer.allocate( OPENGL_WRITABLE_DATA_AMOUNT / 2 );
+    static private final int openGLBaseAddress   = 0x10080000;
+    static private final int openGLHighAddress   = 0x100C0010;
+    static final int OPENGL_WRITABLE_DATA_AMOUNT = openGLHighAddress - openGLBaseAddress;
 
     enum KeyType {
         PRESS,
@@ -105,13 +95,12 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
      * Set up our tool to observe memory
      */
     protected void addAsObserver() {
-        int highAddress = openGLBaseAddress + OPENGL_WRITABLE_DATA_AMOUNT;
         // Special case: baseAddress<0 means we're in kernel memory (0x80000000 and
         // up) and most likely in memory map address space (0xffff0000 and up).  In
         // this case, we need to make sure the high address does not drop off the
         // high end of 32 bit address space.  Highest allowable word address is
         // 0xfffffffc, which is interpreted in Java int as -4.
-        addAsObserver( openGLBaseAddress, highAddress );
+        addAsObserver( openGLBaseAddress, openGLHighAddress );
         addAsObserver( keyPressAddress, keyPressAddress + 0x20 );
     }
 
@@ -120,52 +109,17 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
                                       AccessNotice accessNotice ) {
         if ( accessNotice.getAccessType() == AccessNotice.WRITE ) {
             MemoryAccessNotice mem = (MemoryAccessNotice) accessNotice;
-
-            switch ( mem.getAddress() ) {
-                case openGLColorAddress -> {
-                    uploadData( mem.getAddress() );
-                    canvas.loadColorObjs( buffer );
-                    canvas.swapBuffer();
+            if ( mem.getAddress() < openGLHighAddress ) {
+                if ( mem.getAddress() == openGLBaseAddress ) {
+                    canvas.drawCall( mem.getValue() );
+                } else if ( mem.getAddress() > openGLBaseAddress ) {
+                    canvas.sync( mem.getAddress() - openGLBaseAddress - 4, mem.getValue(), mem.getLength() );
                 }
-                case openGLTextureAddress -> {
-                    uploadData( mem.getAddress() );
-                    canvas.loadTextureObjs( buffer );
-                    canvas.swapBuffer();
-                }
-
-                case keyPressAddress -> {
-                    keyPressAmount = 0;
-                }
-
-                case keyReleaseAddress -> {
-                    keyReleaseAmount = 0;
-                }
-                default -> {
-                }
+            } else if ( mem.getAddress() == keyReleaseAddress ) {
+                keyReleaseAmount = 0;
+            } else if ( mem.getAddress() == keyPressAddress ) {
+                keyPressAmount = 0;
             }
-        }
-    }
-
-    private void uploadData( int addr ) {
-        buffer.clear();
-        try {
-            int amount = Memory.getInstance().getWordNoNotify( addr );
-            buffer.putInt( amount );
-            addr += 4;
-
-            for ( int i = 0; i < amount; i++ ) {
-                buffer.putShort( (short) Memory.getInstance().getHalf( addr ) );
-                addr += 2;
-                buffer.putShort( (short) Memory.getInstance().getHalf( addr ) );
-                addr += 2;
-                buffer.putShort( (short) Memory.getInstance().getHalf( addr ) );
-                addr += 2;
-                buffer.putShort( (short) Memory.getInstance().getHalf( addr ) );
-                addr += 2;
-                buffer.putInt( Memory.getInstance().getWordNoNotify( addr ) );
-                addr += 4;
-            }
-        } catch ( AddressErrorException ex ) {
         }
     }
 
@@ -185,7 +139,10 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
         // OpenGL Canvas
         JPanel firstRowPanel = new JPanel( new BorderLayout() );
         firstRowPanel.setBackground( Color.CYAN );
-        canvas = new PixelBufferCanvas( width, height, 60 );
+
+        GLProfile glp       = GLProfile.get( GLProfile.GL3 ); // Or try GLProfile.get(GLProfile.GL3) if needed
+        GLCapabilities caps = new GLCapabilities( glp );
+        canvas              = new PixelBufferCanvas( width, height, 60, caps ); // Pass capabilities to the constructor
         firstRowPanel.add( canvas, BorderLayout.CENTER );
         firstRowPanel.setBorder( BorderFactory.createEmptyBorder( 10, 10, 10, 10 ) );
 
@@ -206,9 +163,7 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
         panel.addKeyListener( new KeyAdapter() {
             @Override
             public void keyPressed( KeyEvent e ) {
-                if ( isObserving() ) {
-                    handleKeyEvent( e, KeyType.PRESS );
-                }
+                handleKeyEvent( e, KeyType.PRESS );
             }
 
             @Override
@@ -247,11 +202,9 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
         panel.add( thirdRowPanel );
 
         setContentPane( panel );
-        pack();
+        pack(); // Calculate size
         setLocationRelativeTo( null );
         panel.setFocusable( true );
-
-        Timer timer = new Timer();
         // timer.scheduleAtFixedRate( new FPSTask( this ), 0, 1000 );
 
         return panel;
@@ -278,26 +231,24 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
     private void handleKeyEvent( KeyEvent e, KeyType t ) {
         try {
             if ( t == KeyType.PRESS ) {
-                if (keyPressAmount < 8){
-                    Globals.memory.setByte( keyPressAddress + 2  + keyPressAmount, e.getKeyCode() );
+                if ( keyPressAmount < 8 ) {
+                    Globals.memory.setByte( keyPressAddress + 2 + keyPressAmount++, e.getKeyCode() );
                 }
             } else {
-                if (keyReleaseAmount < 8){
-                    Globals.memory.setByte( keyReleaseAddress + 2  + keyReleaseAmount, e.getKeyCode() );
+                if ( keyReleaseAmount < 8 ) {
+                    Globals.memory.setByte( keyReleaseAddress + 2 + keyReleaseAmount++, e.getKeyCode() );
                 }
             }
 
             SwingUtilities.invokeLater( () -> {
-                SwingUtilities.invokeLater( () -> {
-                    logArea.append( String.format( "Key %s: %s (code: %d)\n", t.toString(),
-                                                   KeyEvent.getKeyText( e.getKeyCode() ),
-                                                   e.getKeyCode() ) );
-                    logArea.setCaretPosition( logArea.getDocument().getLength() );
-                } );
+                logArea.append( String.format( "Key %s: %s (code: %d)\n", t.toString(),
+                                               KeyEvent.getKeyText( e.getKeyCode() ),
+                                               e.getKeyCode() ) );
+                logArea.setCaretPosition( logArea.getDocument().getLength() );
             } );
 
         } catch ( AddressErrorException ex ) {
-            displayArea.append( "Error accessing memory: " + ex.getMessage() + "\n" );
+            logArea.append( "Error accessing memory: " + ex.getMessage() + "\n" );
         }
     }
 
@@ -318,7 +269,7 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
      * Reset clears the display and memory
      */
     protected void reset() {
-        displayArea.setText( "" );
+        logArea.setText( "" );
         isFocused = false;
         updateStatus();
 
@@ -328,7 +279,7 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
             Globals.memory.setWord( keyReleaseAddress, 0 );
 
             // Clear all pixels to black
-            // canvas.clearPixels( 0x00000000 );
+            canvas.clear();
             canvas.display();
         } catch ( AddressErrorException ex ) {
             displayArea.append( "Error resetting memory: " + ex.getMessage() + "\n" );
@@ -341,16 +292,15 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
         private int width;
         private int height;
 
-        private int[] vertexId      = new int[1];
-        private int[] instanceId    = new int[4];
-        private int currentInstance = 0;
+        private final int[] vertexArrayId  = new int[1];
+        private final int[] vertexBufferId = new int[1];
+        private final int[] instanceId     = new int[1];
 
-        private int colorObjAmount             = 0;
-        private int textureObjAmount           = 0;
-        private final ByteBuffer colorBuffer   = ByteBuffer.allocate( GameStationOpenGL.OPENGL_WRITABLE_DATA_AMOUNT / 2 );
-        private final ByteBuffer textureBuffer = ByteBuffer.allocate( GameStationOpenGL.OPENGL_WRITABLE_DATA_AMOUNT / 2 );
-        private boolean colorNeedUpdate        = false;
-        private boolean textureNeedUpdate      = false;
+        private ByteBuffer buffer;
+        private final int[] memorySync = new int[GameStationOpenGL.OPENGL_WRITABLE_DATA_AMOUNT / Integer.BYTES];
+
+        private int instanceAmount        = 1;
+        private boolean bufferNeedsUpdate = false;
 
         private volatile boolean initialized = false;
         private volatile boolean contextLost = false;
@@ -361,11 +311,11 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
         private final ShadersUtils shadersUtil   = new ShadersUtils();
         private final TextureManager textManager = new TextureManager();
 
-        public PixelBufferCanvas( int width, int height, int fps ) {
-            super( new GLCapabilities( GLProfile.getDefault() ) );
-            this.width       = width;
-            this.height      = height;
-            this.vertexId[0] = -1;
+        public PixelBufferCanvas( int width, int height, int fps, GLCapabilities caps ) {
+            super( caps );
+            this.width            = width;
+            this.height           = height;
+            this.vertexArrayId[0] = -1;
 
             if ( fps != 0 ) {
                 this.animator = new FPSAnimator( this, fps );
@@ -400,20 +350,46 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
             } );
         }
 
+        public void clear() {
+            for ( int i = 0; i < memorySync.length; i++ ) {
+                memorySync[i] = 0;
+            }
+
+            drawCall( 0 );
+        }
+
+        public void sync( int i, int value, int length ) {
+            int index = Math.floorDiv( i, 4 );
+            int rest  = i % 4;
+            // Java dumbness
+            // For some reason all shift operation have a hidden modulo 0xffffffff >>> (32 % 32)
+            int mask          = length + rest < 4 ? 0xffffffff >>> ( ( length + rest ) * 8 ) : 0;
+            mask              = ( mask | ~( 0xffffffff >>> ( rest * 8 ) ) );
+            int actualValue   = ( memorySync[index] & mask ) | ( ( value << ( length - rest ) * 8 ) & ~mask );
+            memorySync[index] = actualValue;
+        }
+
+        public void drawCall( int value ) {
+            instanceAmount    = value;
+            bufferNeedsUpdate = true;
+        }
+
         @Override
         public void init( GLAutoDrawable drawable ) {
             System.out.println( "OpenGL Init called" );
 
-            GL2 gl = drawable.getGL().getGL2();
-
+            GL3 gl = drawable.getGL().getGL3();
+            gl.glEnable( GL3.GL_DEBUG_OUTPUT );
+            gl.glEnable( GL3.GL_DEBUG_OUTPUT_SYNCHRONOUS );
             try {
                 // Enable error checking
-                gl = new DebugGL2( gl );
+                gl = new DebugGL3( gl );
                 drawable.setGL( gl );
 
                 createVertexBuffer( gl );
                 createInstanceBuffer( gl );
                 shadersUtil.init( gl );
+                textManager.init( gl );
 
                 initialized = true;
                 contextLost = false;
@@ -438,20 +414,27 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
                 return;
             }
 
-            GL2 gl = drawable.getGL().getGL2();
+            GL3 gl = drawable.getGL().getGL3();
             shadersUtil.use( gl, 0 );
 
-            uploadBuffer( gl );
+            if ( bufferNeedsUpdate ) {
+                updateBuffer( gl );
+                bufferNeedsUpdate = false;
+            }
+
+            textManager.populateTexture( gl );
+            shadersUtil.setTexture( gl, textManager.activateTexture( gl ) );
 
             try {
                 // full area
                 gl.glClearColor( 0.2f, 0.2f, 0.2f, 1.0f );
                 gl.glClear( GL.GL_COLOR_BUFFER_BIT );
 
-                gl.glBindVertexArray( vertexId[0] );
-                drawColors( gl );
-                drawTexture( gl );
+                gl.glBindVertexArray( vertexArrayId[0] );
+                gl.glBindBuffer( GL3.GL_ARRAY_BUFFER, instanceId[0] );
+                gl.glDrawArraysInstanced( GL3.GL_TRIANGLE_FAN, 0, 4, instanceAmount );
                 gl.glBindVertexArray( 0 );
+                gl.glBindBuffer( GL3.GL_ARRAY_BUFFER, 0 );
 
                 int error = gl.glGetError();
                 if ( error != GL.GL_NO_ERROR ) {
@@ -465,11 +448,92 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
             }
         }
 
+        private void updateBuffer( GL3 gl ) {
+            gl.glBindBuffer( GL3.GL_ARRAY_BUFFER, instanceId[0] );
+            buffer = gl.glMapBuffer( GL3.GL_ARRAY_BUFFER, GL3.GL_MAP_WRITE_BIT | GL3.GL_READ_WRITE );
+
+            formatBuffer( buffer );
+            printBuffer();
+
+            gl.glUnmapBuffer( GL3.GL_ARRAY_BUFFER );
+            gl.glBindBuffer( GL3.GL_ARRAY_BUFFER, 0 );
+        }
+
+        private void printBuffer() {
+            ByteBuffer duplicateBuffer = buffer.duplicate(); // Create a duplicate
+            duplicateBuffer.flip();                          // Prepare for reading
+
+            System.out.println( "Buffer contents on gl.glBufferSubData" );
+            while ( duplicateBuffer.hasRemaining() ) {
+                System.out.print( "x = " + duplicateBuffer.getFloat() + " | " );
+                System.out.print( "y = " + duplicateBuffer.getFloat() + " | " );
+                System.out.print( "w = " + duplicateBuffer.getFloat() + " | " );
+                System.out.print( "h = " + duplicateBuffer.getFloat() + " | " );
+                System.out.print( "rot = " + duplicateBuffer.getFloat() + " | " );
+                System.out.print( "r =" + duplicateBuffer.getFloat() + " | " );
+                System.out.print( "g = " + duplicateBuffer.getFloat() + " | " );
+                System.out.print( "b =" + duplicateBuffer.getFloat() + " | " );
+                System.out.print( "a = " + duplicateBuffer.getFloat() + " | " );
+                System.out.print( "textId = " + duplicateBuffer.getInt() + " | " );
+                System.out.println(); // New line for clarity
+            }
+        }
+
+        private void formatBuffer( ByteBuffer buffer ) {
+            buffer.clear();
+            for ( int i = 0; i < instanceAmount; i++ ) {
+                int xy     = memorySync[i * 4];
+                int wh     = memorySync[i * 4 + 1];
+                int rotype = memorySync[i * 4 + 2];
+                int color  = memorySync[i * 4 + 3];
+
+                int x = xy >> 16;
+                int y = xy & 0xffff;
+
+                int w = wh >> 16;
+                int h = wh & 0xffff;
+
+                int type     = rotype >> 16;
+                int rotation = rotype & 0xffff;
+
+                float r = ( ( color >> 24 ) & 0xff ) / 255.0f;
+                float g = ( ( color >> 16 ) & 0xff ) / 255.0f;
+                float b = ( ( color >> 8 ) & 0xff ) / 255.0f;
+                float a = ( color & 0xff ) / 255.0f;
+
+                float fx  = ( x * 2.0f + w ) / width - 1.0f;
+                float fy  = -( y * 2.0f + h ) / height + 1.0f;
+                float fw  = w * 2.0f / width;
+                float fh  = h * 2.0f / height;
+                float rot = (float) ( Math.PI * ( rotation / 180.0f ) );
+
+                buffer.putFloat( fx );
+                buffer.putFloat( fy );
+                buffer.putFloat( fw );
+                buffer.putFloat( fh );
+                buffer.putFloat( rot );
+                if ( type == 0 ) {
+                    buffer.putFloat( r );
+                    buffer.putFloat( g );
+                    buffer.putFloat( b );
+                    buffer.putFloat( a );
+                    buffer.putInt( -1 );
+                } else {
+                    int textAddr = color;
+                    buffer.putFloat( 0 );
+                    buffer.putFloat( 0 );
+                    buffer.putFloat( 0 );
+                    buffer.putFloat( 0 );
+                    buffer.putInt( textManager.push( textAddr ) );
+                }
+            }
+        }
+
         @Override
         public void reshape( GLAutoDrawable drawable, int x, int y, int width,
                              int height ) {
             System.out.println( "Reshape called: " + width + "x" + height );
-            GL2 gl = drawable.getGL().getGL2();
+            GL3 gl = drawable.getGL().getGL3();
 
             this.width  = width;
             this.height = height;
@@ -484,19 +548,21 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
                 return;
             }
 
-            GL2 gl = drawable.getGL().getGL2();
-            gl.glDeleteBuffers( 1, vertexId, 0 );
-            gl.glDeleteBuffers( 4, instanceId, 0 );
+            GL3 gl = drawable.getGL().getGL3();
+            gl.glDeleteBuffers( 1, vertexArrayId, 0 );
+            gl.glDeleteBuffers( 1, vertexBufferId, 0 ); // if you need to delete the vertex buffer
+            gl.glDeleteBuffers( 1, instanceId, 0 );
             textManager.dispose( gl );
+            animator.stop();
             initialized = false;
         }
 
-        private void createVertexBuffer( GL2 gl ) {
-            if ( vertexId[0] == -1 ) {
-                gl.glGenBuffers( 1, vertexId, 0 );
+        private void createVertexBuffer( GL3 gl ) {
+            if ( vertexArrayId[0] == -1 ) {
+                gl.glGenVertexArrays( 1, vertexArrayId, 0 );
             }
 
-            gl.glBindBuffer( GL2.GL_ARRAY_BUFFER, vertexId[0] );
+            gl.glBindVertexArray( vertexArrayId[0] );
 
             // clang-format off
             float[] vertices = {
@@ -508,240 +574,126 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
             // clang-format on
 
             FloatBuffer vertexBufferData = Buffers.newDirectFloatBuffer( vertices );
-
-            gl.glBufferData( GL2.GL_ARRAY_BUFFER, vertices.length * Float.BYTES, vertexBufferData, GL2.GL_STATIC_DRAW );
-            gl.glVertexAttribPointer(0, 2, GL2.GL_FLOAT, false, 2 * Float.BYTES, 0);
-            gl.glEnableVertexAttribArray(0);
+            gl.glGenBuffers( 1, vertexBufferId, 0 );
+            gl.glBindBuffer( GL3.GL_ARRAY_BUFFER, vertexBufferId[0] );
+            gl.glBufferData( GL3.GL_ARRAY_BUFFER, vertices.length * Float.BYTES, vertexBufferData, GL3.GL_STATIC_DRAW );
+            gl.glVertexAttribPointer( 0, 2, GL3.GL_FLOAT, false, 2 * Float.BYTES, 0 );
+            gl.glEnableVertexAttribArray( 0 );
         }
 
-        private void createInstanceBuffer( GL2 gl ) {
-            gl.glGenBuffers( 4, instanceId, 0 );
-            for ( int i = 0; i < 4; i++ ) {
-                defineAttributes( gl, instanceId[i] );
-            }
+        private void createInstanceBuffer( GL3 gl ) {
+            gl.glGenBuffers( 1, instanceId, 0 );
+            gl.glBindBuffer( GL3.GL_ARRAY_BUFFER, instanceId[0] );
+            gl.glBufferData(
+                GL3.GL_ARRAY_BUFFER,
+                GameStationOpenGL.OPENGL_WRITABLE_DATA_AMOUNT,
+                null,
+                GL3.GL_DYNAMIC_DRAW );
+
+            defineAttributes( gl, instanceId[0] );
         }
 
-        public void swapBuffer() {
-            this.currentInstance = ( currentInstance + 1 ) % 2;
-        }
+        private void defineAttributes( GL3 gl, int instanceBuffer ) {
+            gl.glBindVertexArray( vertexArrayId[0] );
+            gl.glBindBuffer( GL3.GL_ARRAY_BUFFER, instanceBuffer );
 
-        public void loadColorObjs( ByteBuffer data ) {
-            colorObjAmount = data.getInt();
-            for ( int i = 0; i < colorObjAmount; i++ ) {
-                uploadObjectColor( data, colorBuffer );
-            }
-            this.colorNeedUpdate = true;
-        }
-
-        public void loadTextureObjs( ByteBuffer data ) {
-            textureObjAmount = data.getInt();
-            for ( int i = 0; i < textureObjAmount; i++ ) {
-                uploadObjectTexture( data, colorBuffer );
-            }
-            this.textureNeedUpdate = true;
-        }
-
-        // Assumes correct GLBuffer is binded
-        private void uploadObjectColor( ByteBuffer buffer, ByteBuffer formatedBuffer ) {
-            int xy    = buffer.getInt();
-            int wh    = buffer.getInt();
-            long rotation = buffer.getInt();
-            int color = buffer.getInt();
-
-            int x = xy >> 16;
-            int y = xy ^ 0xffff;
-
-            int w = wh >> 16;
-            int h = wh ^ 0xffff;
-
-            float a = ( ( color >> 24 ) & 0xff ) / 255.0f;
-            float r = ( ( color >> 16 ) & 0xff ) / 255.0f;
-            float g = ( ( color >> 8 ) & 0xff ) / 255.0f;
-            float b = ( color & 0xff ) / 255.0f;
-
-            float fx = (x * 2.0f + w) / width - 1.0f;
-            float fy = -(y * 2.0f + h) / height + 1.0f;
-            float fw = w * 2 / width;
-            float fh = h * 2 / height;
-            float rot = (float) (Math.PI * 2.0f * (rotation / 4294967295.0f));
-
-            formatedBuffer.putFloat( fx );
-            formatedBuffer.putFloat( fy );
-            formatedBuffer.putFloat( fw );
-            formatedBuffer.putFloat( fh );
-            formatedBuffer.putFloat( rot );
-            formatedBuffer.putFloat( r );
-            formatedBuffer.putFloat( g );
-            formatedBuffer.putFloat( b );
-            formatedBuffer.putFloat( a );
-            formatedBuffer.putInt( 0 );
-        }
-
-        private void uploadObjectTexture( ByteBuffer buffer, ByteBuffer formatedBuffer ) {
-            int xy = buffer.getInt();
-            int wh = buffer.getInt();
-            long rotation = buffer.getInt();
-
-            int x = xy >> 16;
-            int y = xy ^ 0xffff;
-            int w = wh >> 16;
-            int h = wh ^ 0xffff;
-
-            float fx = (x * 2.0f + w) / width - 1.0f;
-            float fy = -(y * 2.0f + h) / height + 1.0f;
-            float fw = w * 2 / width;
-            float fh = h * 2 / height;
-            float rot = (float) (Math.PI * 2.0f * (rotation / 4294967295.0f));
-
-
-            int textAddr = buffer.getInt();
-
-            formatedBuffer.putFloat( fx );
-            formatedBuffer.putFloat( fy );
-            formatedBuffer.putFloat( fw );
-            formatedBuffer.putFloat( fh );
-            formatedBuffer.putFloat( rot );
-            formatedBuffer.putFloat( 0 );
-            formatedBuffer.putFloat( 0 );
-            formatedBuffer.putFloat( 0 );
-            formatedBuffer.putFloat( 0 );
-            formatedBuffer.putInt( textManager.push( textAddr ) );
-        }
-
-        private void defineAttributes( GL2 gl, int instanceBuffer ) {
-            gl.glBindBuffer( GL2.GL_ARRAY_BUFFER, instanceBuffer );
-
-            int stride = ( 2 + 2 + 1 + 4 ) * Float.BYTES + Integer.BYTES; // vec2f + vec2f + float + vec4f + int
+            int stride = ( 2 + 2 + 2 + 1 + 4 ) * Float.BYTES + Integer.BYTES;
             int offset = 0;
 
-            // Layout A: position (vec2)
-            gl.glVertexAttribPointer( 1, 2, GL2.GL_FLOAT, false, stride, offset );
+            // Position (vec2)
             gl.glEnableVertexAttribArray( 1 );
+            gl.glVertexAttribPointer( 1, 2, GL3.GL_FLOAT, false, stride, offset );
             gl.glVertexAttribDivisor( 1, 1 );
-
             offset += 2 * Float.BYTES;
 
-            // Layout A: position (vec2)
-            gl.glVertexAttribPointer( 2, 2, GL2.GL_FLOAT, false, stride, offset );
+            // Scale (vec2)
             gl.glEnableVertexAttribArray( 2 );
+            gl.glVertexAttribPointer( 2, 2, GL3.GL_FLOAT, false, stride, offset );
             gl.glVertexAttribDivisor( 2, 1 );
-
             offset += 2 * Float.BYTES;
 
-            // Layout A: rotation (float)
-            gl.glVertexAttribPointer( 3, 2, GL2.GL_FLOAT, false, stride, offset );
+            // Rotation (float)
             gl.glEnableVertexAttribArray( 3 );
+            gl.glVertexAttribPointer( 3, 1, GL3.GL_FLOAT, false, stride, offset );
             gl.glVertexAttribDivisor( 3, 1 );
+            offset += Float.BYTES;
 
-            offset += 1 * Float.BYTES;
-
-            // Layout A: color (vec4)
-            gl.glVertexAttribPointer( 4, 4, GL2.GL_FLOAT, false, stride, offset );
+            // Color (vec4)
             gl.glEnableVertexAttribArray( 4 );
+            gl.glVertexAttribPointer( 4, 4, GL3.GL_FLOAT, false, stride, offset );
             gl.glVertexAttribDivisor( 4, 1 );
-
             offset += 4 * Float.BYTES;
 
-            // Layout A: textureIndex (int)
-            gl.glVertexAttribIPointer( 5, 1, GL2.GL_INT, stride, offset );
+            // TextureID (int)
             gl.glEnableVertexAttribArray( 5 );
+            gl.glVertexAttribIPointer( 5, 1, GL3.GL_INT, stride, offset );
             gl.glVertexAttribDivisor( 5, 1 );
-        }
 
-        private void drawColors( GL2 gl ) {
-            int colorVBO = instanceId[currentInstance * 2];
-            gl.glBindBuffer( GL2.GL_ARRAY_BUFFER, colorVBO );
-            gl.glDrawArraysInstanced( GL2.GL_TRIANGLE_FAN, 0, 4, colorObjAmount );
-        }
-
-        private void drawTexture( GL2 gl ) {
-            int textVBO = instanceId[currentInstance * 2 + 1];
-
-            shadersUtil.setTexture( gl, textManager.activateTexture( gl ) );
-            gl.glBindBuffer( GL2.GL_ARRAY_BUFFER, textVBO );
-            gl.glDrawArraysInstanced( GL2.GL_TRIANGLE_FAN, 0, 4, textureObjAmount );
-        }
-
-        private void uploadBuffer( GL2 gl ) {
-            int i        = ( currentInstance + 1 ) % 2;
-            int colorVBO = instanceId[i * 2];
-            int textVBO  = instanceId[i * 2 + 1];
-
-            if ( this.colorNeedUpdate ) {
-                gl.glBindBuffer( GL2.GL_ARRAY_BUFFER, colorVBO );
-                gl.glBufferData( GL2.GL_ARRAY_BUFFER, colorBuffer.limit(), colorBuffer, GL2.GL_DYNAMIC_DRAW );
-            }
-
-            if ( this.textureNeedUpdate ) {
-                gl.glBindBuffer( GL2.GL_ARRAY_BUFFER, textVBO );
-                gl.glBufferData( GL2.GL_ARRAY_BUFFER, textureBuffer.limit(), textureBuffer, GL2.GL_DYNAMIC_DRAW );
-                textManager.populateTexture( gl );
-            }
+            gl.glBindBuffer( GL3.GL_ARRAY_BUFFER, 0 );
+            gl.glBindVertexArray( 0 );
         }
 
         private class ShadersUtils {
 
-            private ArrayList<Integer> programs;
+            private final ArrayList<Integer> programs = new ArrayList<>( 20 );
             private int vertexShader;
             private int currentProgram;
 
             // clang-format off
-            private final String defaultVertexShader = """
-                #version 330 core
-                layout (location = 0) in vec2 aPos;    // Quad vertex position
-                layout (location = 1) in vec2 iPos;    // Instance position
-                layout (location = 2) in vec2 iScale;  // Instance scale
-                layout (location = 3) in float iAngle; // Instance rotation
-                layout (location = 4) in vec4 iColor;  // Instance Color
-                layout (location = 5) in int iTexture;  // Instance Color
+            private final String defaultVertexShader = 
+                "#version 330 core\n"+
+                "layout (location = 0) in vec2 aPos;    // Quad vertex position\n"+
+                "layout (location = 1) in vec2 iPos;    // Instance position\n"+
+                "layout (location = 2) in vec2 iScale;  // Instance scale\n"+
+                "layout (location = 3) in float iAngle; // Instance rotation\n"+
+                "layout (location = 4) in vec4 iColor;  // Instance Color\n"+
+                "layout (location = 5) in int iTexture;  // Instance Color\n"+
 
-                out vec3 TexCoords;
-                out vec4 ifColor;
+                "out vec3 TexCoords;\n"+
+                "out vec4 ifColor;\n"+
 
-                void main() {
-                    // Work directly in NDC space
-                    float c = cos(iAngle);
-                    float s = sin(iAngle);
-                    mat2 rotation = mat2(c, -s, s, c);
+                "void main() {\n"+
+                    "// Work directly in NDC space\n"+
+                    "float c = cos(iAngle);\n"+
+                    "float s = sin(iAngle);\n"+
+                    "mat2 rotation = mat2(c, -s, s, c);\n"+
                     
-                    // Scale the vertex position
-                    vec2 scaled = aPos * iScale;
+                    "// Scale the vertex position\n"+
+                    "vec2 scaled = aPos * iScale;\n"+
                     
-                    // Rotate around origin
-                    vec2 rotated = rotation * scaled;
+                    "// Rotate around origin\n"+
+                    "vec2 rotated = rotation * scaled;\n"+
                     
-                    // Add instance position
-                    vec2 final = rotated + iPos;
+                    "// Add instance position\n"+
+                    "vec2 final = rotated + iPos;\n"+
                     
-                    // Pass texture coordinates
-                    TexCoords = vec3((aPos + 0.5), iTexture);  // Important: Convert from -0.5 to 0.5 to 0.0 to 1.0
+                    "// Pass texture coordinates\n"+
+                    "TexCoords = vec3((aPos + 0.5), iTexture);  // Important: Convert from -0.5 to 0.5 to 0.0 to 1.0\n"+
                     
-                    gl_Position = vec4(final, 0.0, 1.0);
-                    ifColor = iColor;
-                } 
-            """;
-            private final String defaultFragShader = """
-                #version 330 core
+                    "gl_Position = vec4(final, 0.0, 1.0);\n"+
+                    // "gl_Position = vec4(aPos, 0.0, 1.0);\n"+
+                    "ifColor = iColor;\n"+
+                "}";
+            private final String defaultFragShader = 
+                "#version 330 core\n"+
 
-                in vec3 TexCoords;
-                in vec4 ifColor;
-                out vec4 FragColor;
+                "in vec3 TexCoords;\n"+
+                "in vec4 ifColor;\n"+
 
-                uniform sampler2D myTexture;
-                uniform bool useTexture;
+                "out vec4 FragColor;\n"+
 
-                void main() {
-                    if(useTexture){
-                        FragColor = texture(myTexture, TexCoords);
-                    } else {
-                        FragColor = ifColor;
-                    }
-                }
-            """; // clang-format on
+                "uniform sampler2DArray myTexture;\n"+
 
+                "void main() {\n"+
+                    "if(TexCoords.z > -1){\n"+
+                        "FragColor = texture(myTexture, TexCoords);\n"+
+                    "} else {\n"+
+                        "FragColor = ifColor;\n"+
+                    "}\n"+
+                "}";
+            // clang-format on
 
-
-            public void use( GL2 gl, int program ) {
+            public void use( GL3 gl, int program ) {
                 if ( program >= programs.size() ) {
                     return;
                 }
@@ -750,36 +702,28 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
                 currentProgram = programs.get( program );
             }
 
-            public void enableTextureMode(GL2 gl){
-                gl.glUniform1i(gl.glGetUniformLocation(currentProgram, "useTexture"), 1);
+            public void setTexture( GL3 gl, int textureChannel ) {
+                int texLoc = gl.glGetUniformLocation( currentProgram, "myTexture" );
+                gl.glUniform1i( texLoc, textureChannel );
             }
 
-            public void setTexture(GL2 gl, int textureChannel){
-                int texLoc = gl.glGetUniformLocation(currentProgram, "myTexture");
-                gl.glUniform1i(texLoc, textureChannel);
-            }
-
-            public void disableTextureMode(GL2 gl){
-                gl.glUniform1i(gl.glGetUniformLocation(currentProgram, "useTexture"), 0);
-            }
-
-            public void init( GL2 gl ) {
-                vertexShader  = createShader( gl, GL2.GL_VERTEX_SHADER, defaultVertexShader );
-                int colorFrag = createShader( gl, GL2.GL_FRAGMENT_SHADER, defaultFragShader );
+            public void init( GL3 gl ) {
+                vertexShader  = createShader( gl, GL3.GL_VERTEX_SHADER, defaultVertexShader );
+                int colorFrag = createShader( gl, GL3.GL_FRAGMENT_SHADER, defaultFragShader );
                 programs.add( createProgramId( gl, vertexShader, colorFrag ) );
             }
 
-            private int createShader( GL2 gl, int type, String shaderSource ) {
+            private int createShader( GL3 gl, int type, String shaderSource ) {
                 int shader = gl.glCreateShader( type );
                 gl.glShaderSource( shader, 1, new String[] { shaderSource }, null );
                 gl.glCompileShader( shader );
 
                 // Check for compilation errors
                 IntBuffer compiled = IntBuffer.allocate( 1 );
-                gl.glGetShaderiv( shader, GL2.GL_COMPILE_STATUS, compiled );
-                if ( compiled.get( 0 ) == GL2.GL_FALSE ) {
+                gl.glGetShaderiv( shader, GL3.GL_COMPILE_STATUS, compiled );
+                if ( compiled.get( 0 ) == GL3.GL_FALSE ) {
                     IntBuffer logLength = Buffers.newDirectIntBuffer( 1 );
-                    gl.glGetShaderiv( shader, GL2.GL_INFO_LOG_LENGTH, logLength );
+                    gl.glGetShaderiv( shader, GL3.GL_INFO_LOG_LENGTH, logLength );
 
                     // Retrieve error log
                     if ( logLength.get( 0 ) > 0 ) {
@@ -799,7 +743,7 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
                 return shader;
             }
 
-            private int createProgramId( GL2 gl, int vertexShader, int fragmentShader ) {
+            private int createProgramId( GL3 gl, int vertexShader, int fragmentShader ) {
                 int program = gl.glCreateProgram();
                 gl.glAttachShader( program, vertexShader );
                 gl.glAttachShader( program, fragmentShader );
@@ -807,12 +751,12 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
 
                 // Check for linking errors
                 IntBuffer linked = IntBuffer.allocate( 1 );
-                gl.glGetProgramiv( program, GL2.GL_LINK_STATUS, linked );
+                gl.glGetProgramiv( program, GL3.GL_LINK_STATUS, linked );
 
-                if ( linked.get( 0 ) == GL2.GL_FALSE ) {
+                if ( linked.get( 0 ) == GL3.GL_FALSE ) {
                     // Get log length
                     int[] logLength = new int[1];
-                    gl.glGetProgramiv( program, GL2.GL_INFO_LOG_LENGTH, logLength, 0 );
+                    gl.glGetProgramiv( program, GL3.GL_INFO_LOG_LENGTH, logLength, 0 );
 
                     if ( logLength[0] > 0 ) {
                         byte[] logBytes = new byte[logLength[0]];
@@ -831,11 +775,11 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
         };
 
         private class TextureManager {
-            public class Pair{
+            public class Pair {
                 public int addr;
                 public ByteBuffer data;
 
-                public Pair(int addr, ByteBuffer data) {
+                public Pair( int addr, ByteBuffer data ) {
                     this.addr = addr;
                     this.data = data;
                 }
@@ -847,24 +791,28 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
             private int glTextureArray = -1;
 
             private TextureManager() {
-                this.texturesLoaded = 0;
-                this.bitmapsToLoad = new ArrayDeque<>(); // Use a LinkedList or ArrayDeque
-                this.textureRegister = new HashMap<>(); // Initialize here!
+                this.texturesLoaded  = 0;
+                this.bitmapsToLoad   = new ArrayDeque<>(); // Use a LinkedList or ArrayDeque
+                this.textureRegister = new HashMap<>();    // Initialize here!
             }
 
-            public void init(GL2 gl){
-                IntBuffer text = IntBuffer.allocate(1);
-                gl.glGenTextures(1, text);
-                glTextureArray = text.get(0);
-                gl.glBindTexture(GL2.GL_TEXTURE_2D_ARRAY, glTextureArray);  // Bind as texture array
+            public void init( GL3 gl ) {
+                IntBuffer text = IntBuffer.allocate( 1 );
+                gl.glGenTextures( 1, text );
+                glTextureArray = text.get( 0 );
+                gl.glBindTexture( GL3.GL_TEXTURE_2D_ARRAY, glTextureArray ); // Bind as texture array
 
                 // Texture array parameters
-                gl.glTexParameteri(GL2.GL_TEXTURE_2D_ARRAY, GL2.GL_TEXTURE_WRAP_S, GL2.GL_REPEAT);
-                gl.glTexParameteri(GL2.GL_TEXTURE_2D_ARRAY, GL2.GL_TEXTURE_WRAP_T, GL2.GL_REPEAT);
-                gl.glTexParameteri(GL2.GL_TEXTURE_2D_ARRAY, GL2.GL_TEXTURE_MIN_FILTER, GL2.GL_NEAREST);
-                gl.glTexParameteri(GL2.GL_TEXTURE_2D_ARRAY, GL2.GL_TEXTURE_MAG_FILTER, GL2.GL_NEAREST);
+                gl.glTexParameteri( GL3.GL_TEXTURE_2D_ARRAY, GL3.GL_TEXTURE_WRAP_S, GL3.GL_REPEAT );
+                gl.glTexParameteri( GL3.GL_TEXTURE_2D_ARRAY, GL3.GL_TEXTURE_WRAP_T, GL3.GL_REPEAT );
+                gl.glTexParameteri( GL3.GL_TEXTURE_2D_ARRAY, GL3.GL_TEXTURE_MIN_FILTER, GL3.GL_NEAREST );
+                gl.glTexParameteri( GL3.GL_TEXTURE_2D_ARRAY, GL3.GL_TEXTURE_MAG_FILTER, GL3.GL_NEAREST );
 
-                gl.glTexStorage3D(GL2.GL_TEXTURE_2D_ARRAY, 1, GL2.GL_RGBA8, 64, 64, (OPENGL_WRITABLE_DATA_AMOUNT / 6)); 
+                IntBuffer maxArrayLayers = IntBuffer.allocate( 1 );
+                gl.glGetIntegerv( GL3.GL_MAX_ARRAY_TEXTURE_LAYERS, maxArrayLayers );
+                System.out.println( "Max texture array layers: " + maxArrayLayers.get( 0 ) );
+                int depth = Math.min( GameStationOpenGL.OPENGL_WRITABLE_DATA_AMOUNT / 6, maxArrayLayers.get( 0 ) );
+                gl.glTexStorage3D( GL3.GL_TEXTURE_2D_ARRAY, 1, GL3.GL_RGBA8, 64, 64, depth );
 
                 text.clear();
             }
@@ -881,41 +829,41 @@ public class GameStationOpenGL extends AbstractMarsToolAndApplication {
                         bb.putInt( Memory.getInstance().getWordNoNotify( addr ) );
                     }
 
-                    bitmapsToLoad.add(  new Pair(address, bb));
+                    bitmapsToLoad.add( new Pair( address, bb ) );
                 } catch ( AddressErrorException ex ) {
                 }
             }
 
             public int push( int addr ) {
                 if ( textureRegister.containsKey( addr ) ) {
-                    return textureRegister.get(addr);
+                    return textureRegister.get( addr );
                 }
 
                 register( addr );
                 return texturesLoaded + bitmapsToLoad.size() - 1;
             }
 
-            public void populateTexture( GL2 gl ) {
-                while(! bitmapsToLoad.isEmpty()){
-                    Pair val    = bitmapsToLoad.poll();
+            public void populateTexture( GL3 gl ) {
+                while ( !bitmapsToLoad.isEmpty() ) {
+                    Pair val = bitmapsToLoad.poll();
 
-                    gl.glTexSubImage3D(GL2.GL_TEXTURE_2D_ARRAY, 0, 0, 0, texturesLoaded, 64, 64, 1, GL2.GL_RGBA, GL2.GL_UNSIGNED_BYTE, val.data);
-                    textureRegister.put(val.addr, texturesLoaded++);
+                    gl.glTexSubImage3D( GL3.GL_TEXTURE_2D_ARRAY, 0, 0, 0, texturesLoaded, 64, 64, 1, GL3.GL_RGBA, GL3.GL_UNSIGNED_BYTE, val.data );
+                    textureRegister.put( val.addr, texturesLoaded++ );
                     val.data.clear();
                 }
             }
 
-            public int activateTexture(GL2 gl){
-                gl.glActiveTexture(GL2.GL_TEXTURE0); // Choose your texture unit
-                gl.glBindTexture(GL2.GL_TEXTURE_2D_ARRAY, glTextureArray);
+            public int activateTexture( GL3 gl ) {
+                gl.glActiveTexture( GL3.GL_TEXTURE0 ); // Choose your texture unit
+                gl.glBindTexture( GL3.GL_TEXTURE_2D_ARRAY, glTextureArray );
                 return 0;
             }
 
-            public void dispose(GL2 gl){
-                IntBuffer tex = IntBuffer.allocate(1);
-                tex.put(glTextureArray);
-                gl.glBindTexture(GL2.GL_TEXTURE_2D_ARRAY, 0); // Unbind the texture array
-                gl.glDeleteTextures(1, tex);
+            public void dispose( GL3 gl ) {
+                IntBuffer tex = IntBuffer.allocate( 1 );
+                tex.put( glTextureArray );
+                gl.glBindTexture( GL3.GL_TEXTURE_2D_ARRAY, 0 ); // Unbind the texture array
+                gl.glDeleteTextures( 1, tex );
                 tex.clear();
             }
         }

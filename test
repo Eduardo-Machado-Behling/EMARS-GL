@@ -1,0 +1,20 @@
+
+
+.text
+main:
+	li $s0, 0x10080000
+	li $t1, 200
+	li $t2, 100
+	li $t3, 200
+	li $t4, 100
+	li $t6, 10
+	li $t5, 0x0000ffff
+	
+	li $t0, 1
+	sh $t1, 4($s0)
+	sh $t2, 6($s0)
+	sh $t3, 8($s0)
+	sh $t4, 10($s0)
+	sw $t6, 12($s0)
+	sw $t5, 16($s0)
+	sw $t0, ($s0)
